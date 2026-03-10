@@ -68,8 +68,11 @@ export class OtpService {
       throw err;
     }
 
-    // Render template
-    const smsContent = await this.renderOtpMessage(dto.otp, dto.templateId);
+    // Render template — otp comes from dto.variables
+    const smsContent = await this.renderOtpMessage(
+      dto.templateId,
+      dto.variables as Record<string, string>,
+    );
 
     // Send SMS
     const smsResult = await this.smsProviderFactory.send({
@@ -115,8 +118,8 @@ export class OtpService {
   }
 
   private async renderOtpMessage(
-    otpCode: string,
     templateId?: string,
+    variables?: Record<string, string>,
   ): Promise<string> {
     let body: string | null = null;
 
@@ -134,9 +137,16 @@ export class OtpService {
 
     const appName = this.config.get<string>('app.name') ?? 'StartMessaging';
 
-    return body
-      .replace(/\{\{otp\}\}/g, otpCode)
-      .replace(/\{\{expiry\}\}/g, String(this.expiryMinutes))
-      .replace(/\{\{appName\}\}/g, appName);
+    const defaults: Record<string, string> = {
+      expiry: String(this.expiryMinutes),
+      appName,
+    };
+    const merged = { ...defaults, ...variables };
+
+    for (const [key, val] of Object.entries(merged)) {
+      body = body.replaceAll(`{{${key}}}`, val);
+    }
+
+    return body;
   }
 }
