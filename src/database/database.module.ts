@@ -16,6 +16,10 @@ import { ConfigService } from '@nestjs/config';
         autoLoadEntities: true,
         synchronize: true,
         logging: process.env.NODE_ENV !== 'production',
+        ssl:
+          process.env.NODE_ENV === 'production'
+            ? { rejectUnauthorized: false }
+            : false,
       }),
     }),
   ],
