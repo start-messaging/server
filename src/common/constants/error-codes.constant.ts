@@ -36,6 +36,7 @@ export const ErrorCodes = {
   // General
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
+  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

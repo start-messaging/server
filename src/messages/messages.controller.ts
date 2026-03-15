@@ -23,6 +23,8 @@ export class MessagesController {
       query.limit,
       query.startDate,
       query.endDate,
+      query.status,
+      query.apiKeyId,
     );
     return paginatedResponse(items, total, query.page, query.limit);
   }

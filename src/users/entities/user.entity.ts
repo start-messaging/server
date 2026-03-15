@@ -82,4 +82,10 @@ export class User extends BaseEntity {
 
   @Column({ type: 'timestamptz', nullable: true, select: false })
   mobileOtpExpiresAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  lastLoginAt: Date | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  lastLoginIp: string | null;
 }

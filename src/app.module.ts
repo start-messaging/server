@@ -1,7 +1,10 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { LoggerModule } from 'nestjs-pino';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { AppLoggerModule } from './common/logger/app-logger.module.js';
+import { ConfigService } from '@nestjs/config';
 import { AppConfigModule } from './config/config.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthModule } from './health/health.module.js';
@@ -16,6 +19,7 @@ import { OtpModule } from './otp/otp.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { ChannelsModule } from './channels/channels.module.js';
 import { CommonModule } from './common/common.module.js';
+import { RedisModule } from './common/redis.module.js';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware.js';
 import { CombinedAuthGuard } from './auth/guards/combined-auth.guard.js';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
@@ -25,26 +29,37 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
 
 @Module({
   imports: [
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }]),
-    LoggerModule.forRoot({
-      pinoHttp: {
-        transport:
-          process.env.NODE_ENV !== 'production'
-            ? { target: 'pino-pretty', options: { singleLine: true } }
-            : undefined,
-        autoLogging: true,
-        serializers: {
-          req: (req) => ({
-            method: req.method,
-            url: req.url,
-          }),
-          res: (res) => ({
-            statusCode: res.statusCode,
-          }),
-        },
-        redact: ['req.headers.authorization', 'req.headers["x-api-key"]'],
+    ThrottlerModule.forRootAsync({
+      imports: [AppConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('redis.url');
+        return {
+          throttlers: [{ name: 'default', ttl: 60000, limit: 1200 }], // Global broad limit (burstable)
+          storage: redisUrl ? new ThrottlerStorageRedisService(redisUrl) : undefined,
+        };
       },
     }),
+    BullModule.forRootAsync({
+      imports: [AppConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('redis.url');
+        if (!redisUrl) throw new Error('REDIS_URL is required for BullMQ');
+        
+        // Parsing redis url: redis://[:password@]host[:port][/db]
+        const url = new URL(redisUrl);
+        return {
+          connection: {
+            host: url.hostname,
+            port: parseInt(url.port || '6379', 10),
+            password: url.password || undefined,
+            username: url.username || undefined,
+          },
+        };
+      },
+    }),
+    AppLoggerModule,
     CommonModule,
     AppConfigModule,
     DatabaseModule,
@@ -59,14 +74,15 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
     OtpModule,
     AdminModule,
     ChannelsModule,
+    RedisModule,
   ],
   providers: [
     JwtAuthGuard,
     ApiKeyAuthGuard,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: CombinedAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: OnboardingGuard },
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule implements NestModule {

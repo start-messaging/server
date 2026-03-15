@@ -56,7 +56,7 @@ export class WalletService {
         referenceId,
       );
     }
-    return this.dataSource.transaction('SERIALIZABLE', async (txManager) => {
+    return this.dataSource.transaction(async (txManager) => {
       return this.performCredit(
         txManager,
         userId,
@@ -86,7 +86,7 @@ export class WalletService {
         referenceId,
       );
     }
-    return this.dataSource.transaction('SERIALIZABLE', async (txManager) => {
+    return this.dataSource.transaction(async (txManager) => {
       return this.performDebit(
         txManager,
         userId,
@@ -197,16 +197,72 @@ export class WalletService {
     userId: string,
     page: number,
     limit: number,
+    type?: WalletTransactionType,
+    startDate?: string,
+    endDate?: string,
   ): Promise<[WalletTransaction[], number]> {
     const wallet = await this.getWallet(userId);
-    return this.transactionRepository.findAndCount({
-      where: {
-        walletId: wallet.id,
-        type: In([WalletTransactionType.CREDIT, WalletTransactionType.REFUND]),
-      },
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const queryBuilder = this.transactionRepository
+      .createQueryBuilder('transaction')
+      .where('transaction.walletId = :walletId', { walletId: wallet.id });
+
+    if (type) {
+      queryBuilder.andWhere('transaction.type = :type', { type });
+    }
+
+    if (startDate) {
+      queryBuilder.andWhere('transaction.createdAt >= :startDate', {
+        startDate,
+      });
+    }
+
+    if (endDate) {
+      queryBuilder.andWhere('transaction.createdAt <= :endDate', { endDate });
+    }
+
+    return queryBuilder
+      .orderBy('transaction.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+  }
+
+  async getAdminAnalytics() {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const stats = await this.transactionRepository
+      .createQueryBuilder('t')
+      .select('COALESCE(SUM(t.amount), 0)', 'totalRevenue')
+      .addSelect(`COALESCE(SUM(t.amount) FILTER (WHERE t.createdAt >= :todayStart), 0)`, 'todayRevenue')
+      .where('t.type = :type', { type: WalletTransactionType.DEBIT }) // Debit means usage/revenue for platform
+      .setParameter('todayStart', todayStart)
+      .getRawOne();
+
+    return {
+      totalRevenue: parseFloat(stats.totalRevenue),
+      todayRevenue: parseFloat(stats.todayRevenue),
+    };
+  }
+
+  async getRevenueTrends(days = 7) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    startDate.setHours(0, 0, 0, 0);
+
+    const result = await this.transactionRepository
+      .createQueryBuilder('t')
+      .select("TO_CHAR(t.createdAt, 'YYYY-MM-DD')", 'date')
+      .addSelect('COALESCE(SUM(t.amount), 0)', 'revenue')
+      .where('t.type = :type', { type: WalletTransactionType.DEBIT })
+      .andWhere('t.createdAt >= :startDate', { startDate })
+      .groupBy("TO_CHAR(t.createdAt, 'YYYY-MM-DD')")
+      .orderBy('date', 'ASC')
+      .getRawMany();
+
+    return result.map((r) => ({
+      date: r.date,
+      revenue: parseFloat(r.revenue),
+    }));
   }
 }

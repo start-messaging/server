@@ -27,10 +27,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Register a new user' })
   async register(
     @Body() dto: RegisterDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.register(dto);
+      await this.authService.register(dto, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -46,10 +47,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Authenticate with Google ID token' })
   async googleAuth(
     @Body() dto: GoogleAuthDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.googleAuth(dto);
+      await this.authService.googleAuth(dto, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -66,10 +68,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Login with email and password' })
   async login(
     @Body() dto: LoginDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.login(dto);
+      await this.authService.login(dto, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -101,7 +104,7 @@ export class AuthController {
     }
 
     const { accessToken, refreshToken, user } =
-      await this.authService.refreshTokens(parsed.userId, parsed.token);
+      await this.authService.refreshTokens(parsed.userId, parsed.token, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',

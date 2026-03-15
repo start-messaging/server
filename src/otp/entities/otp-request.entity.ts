@@ -5,6 +5,8 @@ import { User } from '../../users/entities/user.entity.js';
 export enum OtpStatus {
   PENDING = 'pending',
   SENT = 'sent',
+  FAILED = 'failed',
+  VERIFIED = 'verified',
 }
 
 @Index('IDX_otp_requests_userId_status_createdAt', [
@@ -24,6 +26,12 @@ export class OtpRequest extends BaseEntity {
   @Column()
   phoneNumber: string;
 
+  @Column({ nullable: true })
+  code: string;
+
   @Column({ type: 'enum', enum: OtpStatus, default: OtpStatus.PENDING })
   status: OtpStatus;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  expiresAt: Date;
 }

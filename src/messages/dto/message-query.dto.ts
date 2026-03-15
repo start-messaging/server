@@ -16,4 +16,12 @@ export class MessageQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by status' })
+  @IsOptional()
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by API Key ID' })
+  @IsOptional()
+  apiKeyId?: string;
 }

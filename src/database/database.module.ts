@@ -15,7 +15,7 @@ import { ConfigService } from '@nestjs/config';
         password: config.get<string>('database.password'),
         autoLoadEntities: true,
         synchronize: true,
-        logging: process.env.NODE_ENV !== 'production',
+        logging: process.env.NODE_ENV === 'production' ? false : ['error', 'warn'], // Reduced noise (no more "query: SELECT...")
         ssl:
           process.env.NODE_ENV === 'production'
             ? { rejectUnauthorized: false }

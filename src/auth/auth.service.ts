@@ -39,7 +39,7 @@ export class AuthService {
       this.configService.get<number>('auth.bcryptRounds') ?? 10;
   }
 
-  async register(dto: RegisterDto) {
+  async register(dto: RegisterDto, ip: string) {
     const existing = await this.usersService.findByEmail(dto.email);
     if (existing) {
       throw new ConflictException('Email already registered');
@@ -60,7 +60,6 @@ export class AuthService {
       country: dto.country ?? null,
     });
 
-    await this.walletService.createWallet(user.id);
     await this.walletService.credit(
       user.id,
       10,
@@ -69,10 +68,10 @@ export class AuthService {
       user.id,
     );
 
-    return this.buildAuthResponse(user);
+    return this.buildAuthResponse(user, ip);
   }
 
-  async login(dto: LoginDto) {
+  async login(dto: LoginDto, ip: string) {
     const user = await this.usersService.findByEmail(dto.email);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -93,10 +92,10 @@ export class AuthService {
       throw new UnauthorizedException('Account is suspended');
     }
 
-    return this.buildAuthResponse(user);
+    return this.buildAuthResponse(user, ip);
   }
 
-  async googleAuth(dto: GoogleAuthDto) {
+  async googleAuth(dto: GoogleAuthDto, ip: string) {
     if (!this.googleClient) {
       throw new UnauthorizedException(
         'Google authentication is not configured',
@@ -125,7 +124,7 @@ export class AuthService {
       if (!user.isActive) {
         throw new UnauthorizedException('Account is suspended');
       }
-      return this.buildAuthResponse(user);
+      return this.buildAuthResponse(user, ip);
     }
 
     // 2. Find by email — link Google account
@@ -136,7 +135,7 @@ export class AuthService {
       }
       await this.usersService.updateGoogleId(user.id, googleId);
       user = (await this.usersService.findById(user.id))!;
-      return this.buildAuthResponse(user);
+      return this.buildAuthResponse(user, ip);
     }
 
     // 3. New user — create with Google profile
@@ -155,7 +154,6 @@ export class AuthService {
       country: dto.country ?? null,
     });
 
-    await this.walletService.createWallet(user.id);
     await this.walletService.credit(
       user.id,
       10,
@@ -164,10 +162,10 @@ export class AuthService {
       user.id,
     );
 
-    return this.buildAuthResponse(user);
+    return this.buildAuthResponse(user, ip);
   }
 
-  async refreshTokens(userId: string, refreshToken: string) {
+  async refreshTokens(userId: string, refreshToken: string, ip: string) {
     const user = await this.usersService.findByIdWithRefreshToken(userId);
     if (!user || !user.refreshTokenHash) {
       throw new UnauthorizedException('Invalid refresh token');
@@ -185,7 +183,7 @@ export class AuthService {
       throw new UnauthorizedException('Account is suspended');
     }
 
-    return this.buildAuthResponse(user);
+    return this.buildAuthResponse(user, ip);
   }
 
   async revokeRefreshToken(userId: string): Promise<void> {
@@ -216,13 +214,17 @@ export class AuthService {
     return { userId, token };
   }
 
-  async buildAuthResponse(user: User) {
+  async buildAuthResponse(user: User, ip: string) {
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 
     const refreshToken = randomBytes(32).toString('hex');
     const refreshTokenHash = this.hashToken(refreshToken);
-    await this.usersService.updateRefreshTokenHash(user.id, refreshTokenHash);
+    
+    await Promise.all([
+      this.usersService.updateRefreshTokenHash(user.id, refreshTokenHash),
+      this.usersService.updateLastLogin(user.id, ip),
+    ]);
 
     return {
       accessToken,
