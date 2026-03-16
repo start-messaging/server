@@ -9,6 +9,7 @@ import { ApiKeysModule } from '../api-keys/api-keys.module.js';
 import { SmsProvidersModule } from '../sms-providers/sms-providers.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
 import { SmsStatusProcessor } from './queues/sms-status.processor.js';
+import { SmsWebhookProcessor } from './queues/sms-webhook.processor.js';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { SmsStatusProcessor } from './queues/sms-status.processor.js';
     }),
   ],
   controllers: [MessagesController, DashboardController],
-  providers: [MessagesService, SmsStatusProcessor],
+  providers: [MessagesService, SmsStatusProcessor, SmsWebhookProcessor],
   exports: [MessagesService, BullModule],
 })
 export class MessagesModule {}

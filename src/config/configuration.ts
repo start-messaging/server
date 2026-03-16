@@ -25,6 +25,10 @@ export default () => ({
       senderId: process.env.FAST2SMS_SENDER_ID,
       dltTemplateId: process.env.FAST2SMS_DLT_TEMPLATE_ID,
     },
+    twoFactor: {
+      apiKey: process.env.TWOFACTOR_API_KEY,
+      templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP1',
+    },
   },
   mailgun: {
     apiKey: process.env.MAILGUN_API_KEY,

@@ -16,7 +16,7 @@ interface Fast2SmsResponse {
 @Injectable()
 export class Fast2SmsProvider implements SmsProvider {
   name = 'fast2sms';
-  priority = 1;
+  priority = 2;
   private readonly apiKey: string | undefined;
   private readonly route: string;
   private readonly senderId: string | undefined;
@@ -42,7 +42,7 @@ export class Fast2SmsProvider implements SmsProvider {
     const number = this.normalizeNumber(params.to);
 
     try {
-      const body = this.buildRequestBody(number, params.content);
+      const body = this.buildRequestBody(number, params);
 
       const response = await fetch(Fast2SmsProvider.BASE_URL, {
         method: 'POST',
@@ -162,8 +162,9 @@ export class Fast2SmsProvider implements SmsProvider {
 
   private buildRequestBody(
     number: string,
-    content: string,
+    params: SendSmsParams,
   ): Record<string, string> {
+    const { content, templateIdentifiers } = params;
     switch (this.route) {
       case 'otp':
         return {
@@ -176,7 +177,7 @@ export class Fast2SmsProvider implements SmsProvider {
         return {
           route: 'dlt',
           sender_id: this.senderId ?? '',
-          message: this.dltTemplateId ?? '',
+          message: templateIdentifiers?.['fast2sms'] || (this.dltTemplateId ?? ''),
           variables_values: this.extractOtp(content),
           numbers: number,
         };

@@ -50,27 +50,8 @@ export class MessagesService {
 
     const mappedStatus = this.mapProviderStatus(dlr.status);
     if (!mappedStatus) return message;
-    
-    // Logic for Deferred Debit:
-    // Only debit if it transitioned to DELIVERED and wasn't already debited
-    if (mappedStatus === MessageStatus.DELIVERED && message.status !== MessageStatus.DELIVERED) {
-      try {
-        await this.walletService.debit(
-          message.userId,
-          message.costAmount,
-          `OTP delivered to ${message.phoneNumber}`,
-          'otp_usage',
-          message.id,
-        );
-      } catch (err) {
-        // If debit fails (e.g. balance somehow went below after initiation), 
-        // we still mark as delivered but log the error. 
-        // In reality, our reserve check at initiation prevents this.
-        console.error(`Failed to debit user ${message.userId} after delivery: ${err.message}`);
-      }
-    }
 
-    return this.updateStatus(messageId, mappedStatus, {
+    return this.handleStatusUpdate(message, mappedStatus, {
       deliveredAt: dlr.deliveredAt || (mappedStatus === MessageStatus.DELIVERED ? new Date() : null),
       senderId: dlr.senderId || message.senderId,
       smsLanguage: dlr.smsLanguage || message.smsLanguage,
@@ -80,6 +61,34 @@ export class MessagesService {
       providerStatusDescription: dlr.description || message.providerStatusDescription,
       metadata: dlr.rawResponse || message.metadata,
     });
+  }
+
+  /**
+   * Universal handler for status updates from ANY source (Polling or Webhook)
+   * Handles business logic like deferred wallet debiting.
+   */
+  async handleStatusUpdate(
+    message: Message,
+    newStatus: MessageStatus,
+    extraFields?: Partial<Message>,
+  ): Promise<Message> {
+    // Logic for Deferred Debit:
+    // Only debit if it transitioned to DELIVERED and wasn't already debited
+    if (newStatus === MessageStatus.DELIVERED && message.status !== MessageStatus.DELIVERED) {
+      try {
+        await this.walletService.debit(
+          message.userId,
+          message.costAmount,
+          `OTP delivered to ${message.phoneNumber}`,
+          'otp_usage',
+          message.id,
+        );
+      } catch (err) {
+        console.error(`Failed to debit user ${message.userId} after delivery: ${err.message}`);
+      }
+    }
+
+    return this.updateStatus(message.id, newStatus, extraFields);
   }
 
   async updateStatus(
@@ -164,6 +173,12 @@ export class MessagesService {
     return this.messageRepository.findOne({
       select: this.customerFields,
       where,
+    });
+  }
+
+  async findByProviderMsgId(providerMsgId: string): Promise<Message | null> {
+    return this.messageRepository.findOne({
+      where: { providerMsgId },
     });
   }
 

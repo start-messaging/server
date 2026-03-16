@@ -56,7 +56,7 @@ export class OtpService {
     }
 
     // 3. Render Template
-    const smsContent = await this.renderOtpMessage(
+    const { body: smsContent, identifiers } = await this.renderOtpMessage(
       dto.templateId,
       dto.variables as Record<string, string>,
     );
@@ -76,13 +76,14 @@ export class OtpService {
       smsResult = await this.smsProviderFactory.send({
         to: dto.phoneNumber,
         content: smsContent,
+        templateIdentifiers: identifiers,
       });
 
       if (smsResult.status === 'failed') {
         throw new Error(smsResult.failureReason || 'SMS Provider rejected request');
       }
 
-      // 5. Create Message record as INITIATED
+      // 5. Create Message record using the provider's returned status (usually 'sent')
       const message = await this.messagesService.create({
         userId,
         otpRequestId: otpRequest.id,
@@ -90,28 +91,33 @@ export class OtpService {
         content: `OTP sent`,
         provider: smsResult.provider,
         providerMsgId: smsResult.providerMsgId || null,
-        status: MessageStatus.INITIATED,
+        status: this.mapResultStatus(smsResult.status),
         costAmount: this.costPerOtp,
-        senderId: this.config.get<string>('sms.fast2sms.senderId'),
+        senderId: smsResult.provider === 'fast2sms' 
+          ? this.config.get<string>('sms.fast2sms.senderId') 
+          : undefined,
         apiKeyId,
       });
 
-      // 6. Add to BullMQ for status polling (Start after 10 seconds)
-      await this.smsQueue.add(
-        'check-status',
-        { messageId: message.id },
-        {
-          delay: 10000,
-          attempts: 15,
-          backoff: { type: 'exponential', delay: 30000 },
-          removeOnComplete: true,
-        },
-      );
+      // 6. Add to BullMQ for status polling ONLY if the provider is NOT 2factor
+      // 2factor is handled purely via incoming webhooks.
+      if (smsResult.provider !== '2factor') {
+        await this.smsQueue.add(
+          'check-status',
+          { messageId: message.id },
+          {
+            delay: 10000,
+            attempts: 15,
+            backoff: { type: 'exponential', delay: 30000 },
+            removeOnComplete: true,
+          },
+        );
+      }
 
       return {
         otpRequestId: otpRequest.id,
         messageId: message.id,
-        status: MessageStatus.INITIATED,
+        status: message.status,
         phoneNumber: dto.phoneNumber,
         createdAt: message.createdAt,
       };
@@ -152,13 +158,15 @@ export class OtpService {
   private async renderOtpMessage(
     templateId?: string,
     variables?: Record<string, string>,
-  ): Promise<string> {
+  ): Promise<{ body: string; identifiers: Record<string, string> }> {
     let body: string | null = null;
+    let identifiers: Record<string, string> = {};
 
     if (templateId) {
       const template = await this.channelsService.findTemplateById(templateId);
       if (template) {
         body = template.body;
+        identifiers = (template.metadata as Record<string, string>) || {};
       }
     }
 
@@ -179,7 +187,7 @@ export class OtpService {
       body = body.replaceAll(`{{${key}}}`, val);
     }
 
-    return body;
+    return { body, identifiers };
   }
 
   private async checkMobileRateLimit(phoneNumber: string) {
@@ -207,6 +215,17 @@ export class OtpService {
     const count = await this.redis.get(key);
     if (count && parseInt(count) > 0) {
       await this.redis.decr(key);
+    }
+  }
+
+  private mapResultStatus(status: string): MessageStatus {
+    switch (status) {
+      case 'sent':
+        return MessageStatus.SENT;
+      case 'failed':
+        return MessageStatus.FAILED;
+      default:
+        return MessageStatus.INITIATED;
     }
   }
 }

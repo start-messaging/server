@@ -1,6 +1,7 @@
 export interface SendSmsParams {
   to: string;
   content: string;
+  templateIdentifiers?: Record<string, string>;
 }
 
 export interface SendSmsResult {
