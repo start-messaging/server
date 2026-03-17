@@ -4,6 +4,7 @@ import { WalletService } from './wallet.service.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { SkipOnboarding } from '../common/decorators/skip-onboarding.decorator.js';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto.js';
+import { TransactionQueryDto } from './dto/transaction-query.dto.js';
 import { paginatedResponse } from '../common/utils/pagination.util.js';
 
 @ApiTags('Wallet')
@@ -23,12 +24,15 @@ export class WalletController {
   @ApiOperation({ summary: 'Get wallet transaction history' })
   async getTransactions(
     @CurrentUser('id') userId: string,
-    @Query() query: PaginationQueryDto,
+    @Query() query: TransactionQueryDto,
   ) {
     const [items, total] = await this.walletService.getTransactions(
       userId,
       query.page,
       query.limit,
+      query.type,
+      query.startDate,
+      query.endDate,
     );
     return paginatedResponse(items, total, query.page, query.limit);
   }

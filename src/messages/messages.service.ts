@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { Message, MessageStatus } from './entities/message.entity.js';
 import { SmsProviderFactory } from '../sms-providers/sms-provider.factory.js';
+import { WalletService } from '../wallet/wallet.service.js';
 
 @Injectable()
 export class MessagesService {
@@ -15,16 +16,84 @@ export class MessagesService {
     @InjectRepository(Message)
     private readonly messageRepository: Repository<Message>,
     private readonly smsProviderFactory: SmsProviderFactory,
+    private readonly walletService: WalletService,
   ) {}
 
   async create(data: Partial<Message>): Promise<Message> {
+    const status = data.status || MessageStatus.INITIATED;
     const message = this.messageRepository.create({
       ...data,
+      status,
       statusHistory: [
-        { status: MessageStatus.QUEUED, timestamp: new Date().toISOString() },
+        { status, timestamp: new Date().toISOString() },
       ],
     });
     return this.messageRepository.save(message);
+  }
+
+  /**
+   * Syncs status with provider and handles deferred debit on success
+   */
+  async syncProviderStatus(messageId: string): Promise<Message> {
+    const message = await this.messageRepository.findOneOrFail({
+      where: { id: messageId },
+    });
+
+    if (!message.providerMsgId) return message;
+
+    const dlr = await this.smsProviderFactory.getDeliveryStatus(
+      message.provider,
+      message.providerMsgId,
+    );
+
+    if (dlr.status === 'unknown') return message;
+
+    const mappedStatus = this.mapProviderStatus(dlr.status);
+    if (!mappedStatus) return message;
+
+    return this.handleStatusUpdate(message, mappedStatus, {
+      deliveredAt: dlr.deliveredAt || (mappedStatus === MessageStatus.DELIVERED ? new Date() : null),
+      senderId: dlr.senderId || message.senderId,
+      smsLanguage: dlr.smsLanguage || message.smsLanguage,
+      characterCount: dlr.characterCount || message.characterCount,
+      smsCount: dlr.smsCount || message.smsCount,
+      providerCost: dlr.providerCost || message.providerCost,
+      providerStatusDescription: dlr.description || message.providerStatusDescription,
+      metadata: dlr.rawResponse || message.metadata,
+    });
+  }
+
+  /**
+   * Universal handler for status updates from ANY source (Polling or Webhook)
+   * Handles business logic like deferred wallet debiting.
+   */
+  async handleStatusUpdate(
+    message: Message,
+    newStatus: MessageStatus,
+    extraFields?: Partial<Message>,
+  ): Promise<Message> {
+    // Logic for Deferred Debit:
+    // Only debit if it transitioned to DELIVERED and wasn't already debited
+    if (newStatus === MessageStatus.DELIVERED && message.status !== MessageStatus.DELIVERED) {
+      try {
+        await this.walletService.debit(
+          message.userId,
+          message.costAmount,
+          `OTP delivered to ${message.phoneNumber}`,
+          'otp_usage',
+          message.id,
+        );
+      } catch (err) {
+        console.error(`Failed to debit user ${message.userId} after delivery: ${err.message}`);
+      }
+    }
+
+    // Reset cost for failed/expired messages to reflect actual spend
+    if (newStatus === MessageStatus.FAILED || newStatus === MessageStatus.EXPIRED) {
+      extraFields = { ...extraFields, costAmount: 0 };
+    }
+
+    return this.updateStatus(message.id, newStatus, extraFields);
   }
 
   async updateStatus(
@@ -52,6 +121,7 @@ export class MessagesService {
   private readonly customerFields: (keyof Message)[] = [
     'id',
     'userId',
+    'apiKeyId',
     'phoneNumber',
     'content',
     'status',
@@ -70,42 +140,34 @@ export class MessagesService {
     limit: number,
     startDate?: string,
     endDate?: string,
+    status?: string,
+    apiKeyId?: string,
   ): Promise<[Message[], number]> {
-    const where: FindOptionsWhere<Message> = { userId };
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .select(this.customerFields.map((f) => `m.${f}`))
+      .where('m.userId = :userId', { userId });
 
     if (startDate) {
-      where.createdAt = MoreThanOrEqual(new Date(startDate));
+      qb.andWhere('m.createdAt >= :startDate', {
+        startDate: new Date(startDate),
+      });
     }
     if (endDate) {
-      where.createdAt =
-        endDate && startDate
-          ? MoreThanOrEqual(new Date(startDate))
-          : LessThanOrEqual(new Date(endDate));
+      qb.andWhere('m.createdAt <= :endDate', { endDate: new Date(endDate) });
+    }
+    if (status) {
+      qb.andWhere('m.status = :status', { status });
+    }
+    if (apiKeyId) {
+      qb.andWhere('m.apiKeyId = :apiKeyId', { apiKeyId });
     }
 
-    // When both are provided, we need a custom query
-    if (startDate && endDate) {
-      return this.messageRepository
-        .createQueryBuilder('m')
-        .select(this.customerFields.map((f) => `m.${f}`))
-        .where('m.userId = :userId', { userId })
-        .andWhere('m.createdAt >= :startDate', {
-          startDate: new Date(startDate),
-        })
-        .andWhere('m.createdAt <= :endDate', { endDate: new Date(endDate) })
-        .orderBy('m.createdAt', 'DESC')
-        .skip((page - 1) * limit)
-        .take(limit)
-        .getManyAndCount();
-    }
-
-    return this.messageRepository.findAndCount({
-      select: this.customerFields,
-      where,
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    return qb
+      .orderBy('m.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
   }
 
   async findById(id: string, userId?: string): Promise<Message | null> {
@@ -116,6 +178,12 @@ export class MessagesService {
     return this.messageRepository.findOne({
       select: this.customerFields,
       where,
+    });
+  }
+
+  async findByProviderMsgId(providerMsgId: string): Promise<Message | null> {
+    return this.messageRepository.findOne({
+      where: { providerMsgId },
     });
   }
 
@@ -141,26 +209,21 @@ export class MessagesService {
       return this.pickCustomerFields(message);
     }
 
-    const providerStatus = await this.smsProviderFactory.getDeliveryStatus(
+    const dlr = await this.smsProviderFactory.getDeliveryStatus(
       message.provider,
       message.providerMsgId,
     );
 
-    const mappedStatus = this.mapProviderStatus(providerStatus);
+    const mappedStatus = this.mapProviderStatus(dlr.status);
 
     if (mappedStatus && mappedStatus !== message.status) {
-      const extra: Partial<Message> = {};
-      if (mappedStatus === MessageStatus.DELIVERED) {
-        extra.deliveredAt = new Date();
-      }
-      const updated = await this.updateStatus(id, mappedStatus, extra);
-      return this.pickCustomerFields(updated);
+      return this.syncProviderStatus(id);
     }
 
     return this.pickCustomerFields(message);
   }
 
-  private mapProviderStatus(status: string): MessageStatus | null {
+  private mapProviderStatus(status: 'sent' | 'delivered' | 'failed' | 'unknown'): MessageStatus | null {
     switch (status) {
       case 'delivered':
         return MessageStatus.DELIVERED;
@@ -222,7 +285,10 @@ export class MessagesService {
     const result = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'totalMessages')
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'totalSpent')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'totalSpent',
+      )
       .addSelect(
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.QUEUED}')`,
         'queued',
@@ -263,13 +329,62 @@ export class MessagesService {
     const result = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'totalMessages')
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'totalRevenue')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'totalRevenue',
+      )
       .getRawOne();
-
+ 
     return {
       totalMessages: parseInt(result.totalMessages, 10),
       totalRevenue: parseFloat(result.totalRevenue),
     };
+  }
+
+  async getAdminDashboardStats() {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const stats = await this.messageRepository
+      .createQueryBuilder('m')
+      .select('COUNT(*)', 'total')
+      .addSelect(`COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`, 'delivered')
+      .addSelect(`COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`, 'failed')
+      .addSelect(`COUNT(*) FILTER (WHERE m.createdAt >= :todayStart)`, 'todayCount')
+      .setParameter('todayStart', todayStart)
+      .getRawOne();
+
+    return {
+      total: parseInt(stats.total, 10),
+      delivered: parseInt(stats.delivered, 10),
+      failed: parseInt(stats.failed, 10),
+      todayCount: parseInt(stats.todayCount, 10),
+      successRate: stats.total > 0 ? (stats.delivered / stats.total) * 100 : 0,
+    };
+  }
+
+  async getAdminTrends(days = 7) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    startDate.setHours(0, 0, 0, 0);
+
+    const result = await this.messageRepository
+      .createQueryBuilder('m')
+      .select("TO_CHAR(m.createdAt, 'YYYY-MM-DD')", 'date')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect(`COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`, 'delivered')
+      .addSelect(`COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`, 'failed')
+      .where('m.createdAt >= :startDate', { startDate })
+      .groupBy("TO_CHAR(m.createdAt, 'YYYY-MM-DD')")
+      .orderBy('date', 'ASC')
+      .getRawMany();
+
+    return result.map((r) => ({
+      date: r.date,
+      total: parseInt(r.total, 10),
+      delivered: parseInt(r.delivered, 10),
+      failed: parseInt(r.failed, 10),
+    }));
   }
 
   async getDashboardStats(
@@ -293,7 +408,10 @@ export class MessagesService {
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
         'failed',
       )
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'cost')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'cost',
+      )
       .where('m.userId = :userId', { userId })
       .andWhere('m.createdAt >= :rangeStart', { rangeStart });
 
@@ -306,7 +424,10 @@ export class MessagesService {
     const totalStats = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'messages')
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'cost')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'cost',
+      )
       .where('m.userId = :userId', { userId })
       .getRawOne();
 
@@ -322,5 +443,36 @@ export class MessagesService {
         cost: parseFloat(totalStats.cost),
       },
     };
+  }
+
+  async getDashboardTrends(userId: string, days = 7) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    startDate.setHours(0, 0, 0, 0);
+
+    const result = await this.messageRepository
+      .createQueryBuilder('m')
+      .select("TO_CHAR(m.createdAt, 'YYYY-MM-DD')", 'date')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect(
+        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`,
+        'delivered',
+      )
+      .addSelect(
+        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
+        'failed',
+      )
+      .where('m.userId = :userId', { userId })
+      .andWhere('m.createdAt >= :startDate', { startDate })
+      .groupBy("TO_CHAR(m.createdAt, 'YYYY-MM-DD')")
+      .orderBy('date', 'ASC')
+      .getRawMany();
+
+    return result.map((r) => ({
+      date: r.date,
+      total: parseInt(r.total, 10),
+      delivered: parseInt(r.delivered, 10),
+      failed: parseInt(r.failed, 10),
+    }));
   }
 }

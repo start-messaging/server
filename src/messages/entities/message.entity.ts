@@ -3,6 +3,7 @@ import { BaseEntity } from '../../common/entities/base.entity.js';
 import { User } from '../../users/entities/user.entity.js';
 
 export enum MessageStatus {
+  INITIATED = 'initiated',
   QUEUED = 'queued',
   SENT = 'sent',
   DELIVERED = 'delivered',
@@ -12,6 +13,7 @@ export enum MessageStatus {
 
 @Index('IDX_messages_userId_createdAt', ['userId', 'createdAt'])
 @Index('IDX_messages_userId_status', ['userId', 'status'])
+@Index('IDX_messages_senderId', ['senderId'])
 @Entity('messages')
 export class Message extends BaseEntity {
   @Column()
@@ -20,6 +22,9 @@ export class Message extends BaseEntity {
   @ManyToOne(() => User)
   @JoinColumn({ name: 'userId' })
   user: User;
+
+  @Column({ type: 'varchar', nullable: true })
+  apiKeyId: string | null;
 
   @Column({ type: 'varchar', nullable: true })
   otpRequestId: string | null;
@@ -36,7 +41,7 @@ export class Message extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   providerMsgId: string | null;
 
-  @Column({ type: 'enum', enum: MessageStatus, default: MessageStatus.QUEUED })
+  @Column({ type: 'enum', enum: MessageStatus, default: MessageStatus.INITIATED })
   status: MessageStatus;
 
   @Column({ type: 'jsonb', default: [] })
@@ -44,6 +49,27 @@ export class Message extends BaseEntity {
 
   @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
   costAmount: number;
+
+  @Column({ type: 'varchar', nullable: true })
+  senderId: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  smsLanguage: string | null;
+
+  @Column({ type: 'integer', default: 0 })
+  characterCount: number;
+
+  @Column({ type: 'integer', default: 0 })
+  smsCount: number;
+
+  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  providerCost: number;
+
+  @Column({ type: 'varchar', nullable: true })
+  providerStatusDescription: string | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  metadata: any;
 
   @Column({ type: 'varchar', nullable: true })
   failureReason: string | null;

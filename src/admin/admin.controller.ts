@@ -136,20 +136,48 @@ export class AdminController {
   @Get('dashboard')
   @ApiOperation({ summary: 'Admin dashboard stats' })
   async getDashboard() {
-    const [, totalUsers] = await this.usersService.findAll(1, 1);
-    const activeUsers = await this.usersService.countActive();
-    const { totalMessages, totalRevenue } =
-      await this.messagesService.getAdminStats();
-    const pendingKycCount = await this.usersService.countByKycStatus(
-      KycStatus.PENDING,
-    );
+    const [
+      [, totalUsers],
+      activeUsers,
+      userStats,
+      messageStats,
+      revenueStats,
+      messageTrends,
+      revenueTrends,
+      pendingKycCount,
+    ] = await Promise.all([
+      this.usersService.findAll(1, 1),
+      this.usersService.countActive(),
+      this.usersService.getDashboardStats(),
+      this.messagesService.getAdminDashboardStats(),
+      this.walletService.getAdminAnalytics(),
+      this.messagesService.getAdminTrends(7),
+      this.walletService.getRevenueTrends(7),
+      this.usersService.countByKycStatus(KycStatus.PENDING),
+    ]);
 
     return {
-      totalUsers,
-      activeUsers,
-      totalMessages,
-      totalRevenue,
-      pendingKycCount,
+      overview: {
+        totalUsers,
+        activeUsers,
+        totalMessages: messageStats.total,
+        totalRevenue: revenueStats.totalRevenue,
+        pendingKycCount,
+      },
+      growth: {
+        newUsersToday: userStats.newToday,
+        newUsersThisWeek: userStats.newThisWeek,
+      },
+      performance: {
+        successRate: messageStats.successRate,
+        messagesToday: messageStats.todayCount,
+        revenueToday: revenueStats.todayRevenue,
+        failedMessages: messageStats.failed,
+      },
+      trends: {
+        messages: messageTrends,
+        revenue: revenueTrends,
+      },
     };
   }
 
@@ -230,6 +258,12 @@ export class AdminController {
       query.limit,
     );
     return paginatedResponse(items, total, query.page, query.limit);
+  }
+
+  @Get('users/:userId/api-keys')
+  @ApiOperation({ summary: 'List all API keys for a user (admin)' })
+  async getUserApiKeys(@Param('userId') userId: string) {
+    return this.apiKeysService.findAllByUser(userId);
   }
 
   // Template management

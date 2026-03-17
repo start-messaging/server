@@ -28,6 +28,15 @@ export class DashboardController {
     );
   }
 
+  @Get('trends')
+  @ApiOperation({ summary: 'Get message trends for graphs' })
+  async getTrends(
+    @CurrentUser('id') userId: string,
+    @Query('days') days?: number,
+  ) {
+    return this.messagesService.getDashboardTrends(userId, days || 7);
+  }
+
   @Get('api-keys')
   @ApiOperation({ summary: 'List all API keys for current user' })
   async getApiKeys(@CurrentUser('id') userId: string) {

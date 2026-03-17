@@ -43,6 +43,7 @@ export class ApiKeyAuthGuard implements CanActivate {
       email: keyEntity.user.email,
       role: keyEntity.user.role,
     };
+    request.apiKeyId = keyEntity.id;
 
     return true;
   }

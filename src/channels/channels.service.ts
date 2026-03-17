@@ -13,20 +13,8 @@ import { TemplateStatus } from './enums/template-status.enum.js';
 
 const SYSTEM_TEMPLATES = [
   {
-    name: 'Default OTP',
-    body: 'Your verification code is {{otp}}. Valid for {{expiry}} minutes.',
-  },
-  {
-    name: 'Login Verification',
-    body: '{{otp}} is your OTP for {{appName}}. Do not share with anyone.',
-  },
-  {
-    name: 'Account Verification',
-    body: 'Use {{otp}} to verify your account. Expires in {{expiry}} minutes.',
-  },
-  {
-    name: 'One-Time Password',
-    body: 'Your one-time password is {{otp}}. It is valid for {{expiry}} minutes.',
+    name: 'Standard OTP',
+    body: 'Your OTP is {{otp}}. Do not share this code with anyone. Powered by Start Messaging',
   },
 ];
 

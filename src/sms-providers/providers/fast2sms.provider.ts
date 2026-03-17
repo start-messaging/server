@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  DlrResult,
   SendSmsParams,
   SendSmsResult,
   SmsProvider,
@@ -15,7 +16,7 @@ interface Fast2SmsResponse {
 @Injectable()
 export class Fast2SmsProvider implements SmsProvider {
   name = 'fast2sms';
-  priority = 1;
+  priority = 2;
   private readonly apiKey: string | undefined;
   private readonly route: string;
   private readonly senderId: string | undefined;
@@ -41,7 +42,7 @@ export class Fast2SmsProvider implements SmsProvider {
     const number = this.normalizeNumber(params.to);
 
     try {
-      const body = this.buildRequestBody(number, params.content);
+      const body = this.buildRequestBody(number, params);
 
       const response = await fetch(Fast2SmsProvider.BASE_URL, {
         method: 'POST',
@@ -85,9 +86,9 @@ export class Fast2SmsProvider implements SmsProvider {
     }
   }
 
-  async getDeliveryStatus(providerMsgId: string): Promise<string> {
+  async getDeliveryStatus(providerMsgId: string): Promise<DlrResult> {
     if (!this.apiKey) {
-      return 'unknown';
+      return { status: 'unknown' };
     }
 
     try {
@@ -97,29 +98,49 @@ export class Fast2SmsProvider implements SmsProvider {
         headers: { authorization: this.apiKey },
       });
 
-      const data = (await response.json()) as {
-        return?: boolean;
-        status?: string;
+      const data = (await response.json()) as any;
+
+      if (!data.return || !data.data || !data.data[0]) {
+        return { status: 'unknown', rawResponse: data };
+      }
+
+      const dlr = data.data[0].delivery_status?.[0];
+      if (!dlr) {
+        return { status: 'unknown', rawResponse: data };
+      }
+
+      const statusMap: Record<string, 'delivered' | 'failed' | 'sent' | 'unknown'> = {
+        'delivered': 'delivered',
+        'failed': 'failed',
+        'rejected': 'failed',
+        'sent': 'sent',
+        'submitted': 'sent',
       };
 
-      if (!data.return) {
-        return 'unknown';
+      const normalizedStatus = (dlr.status || '').toLowerCase();
+      let status: 'delivered' | 'failed' | 'sent' | 'unknown' = 'unknown';
+      
+      for (const [key, val] of Object.entries(statusMap)) {
+        if (normalizedStatus.includes(key)) {
+          status = val;
+          break;
+        }
       }
 
-      const status = (data.status ?? '').toLowerCase();
-      if (status.includes('delivered') || status.includes('delivrd')) {
-        return 'delivered';
-      }
-      if (status.includes('failed') || status.includes('reject')) {
-        return 'failed';
-      }
-      if (status.includes('sent') || status.includes('submit')) {
-        return 'sent';
-      }
-      return 'unknown';
+      return {
+        status,
+        description: dlr.status_description,
+        senderId: dlr.sender_id,
+        smsLanguage: dlr.sms_language,
+        characterCount: dlr.character_count,
+        smsCount: dlr.sms_count,
+        providerCost: dlr.amount_debited ? parseFloat(dlr.amount_debited) : undefined,
+        deliveredAt: dlr.delivery_timestamp ? new Date(dlr.delivery_timestamp * 1000) : undefined,
+        rawResponse: data,
+      };
     } catch (err: any) {
       this.logger.warn(`Fast2SMS DLR check failed: ${err.message}`);
-      return 'unknown';
+      return { status: 'unknown' };
     }
   }
 
@@ -141,8 +162,9 @@ export class Fast2SmsProvider implements SmsProvider {
 
   private buildRequestBody(
     number: string,
-    content: string,
+    params: SendSmsParams,
   ): Record<string, string> {
+    const { content, templateIdentifiers } = params;
     switch (this.route) {
       case 'otp':
         return {
@@ -155,7 +177,7 @@ export class Fast2SmsProvider implements SmsProvider {
         return {
           route: 'dlt',
           sender_id: this.senderId ?? '',
-          message: this.dltTemplateId ?? '',
+          message: templateIdentifiers?.['fast2sms'] || (this.dltTemplateId ?? ''),
           variables_values: this.extractOtp(content),
           numbers: number,
         };

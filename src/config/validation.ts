@@ -45,4 +45,16 @@ export const envValidationSchema = Joi.object({
   // OTP
   OTP_EXPIRY_MINUTES: Joi.number().default(5),
   OTP_COST: Joi.number().default(0.25),
+
+  // Redis
+  REDIS_URL: Joi.string().optional(),
+
+  // Mailgun
+  MAILGUN_API_KEY: Joi.string().optional(),
+  MAILGUN_DOMAIN: Joi.string().optional(),
+  MAILGUN_FROM_NAME: Joi.string().default('StartMessaging'),
+  MAILGUN_FROM_EMAIL: Joi.string().optional(),
+  
+  // Custom testing
+  MOCK_SMS_SEND: Joi.boolean().default(false),
 });

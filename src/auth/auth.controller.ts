@@ -14,6 +14,7 @@ import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { GoogleAuthDto } from './dto/google-auth.dto.js';
 import { Public } from '../common/decorators/public.decorator.js';
+import { SkipOnboarding } from '../common/decorators/skip-onboarding.decorator.js';
 import type { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface.js';
 
 @ApiTags('Auth')
@@ -27,10 +28,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Register a new user' })
   async register(
     @Body() dto: RegisterDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.register(dto);
+      await this.authService.register(dto, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -46,10 +48,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Authenticate with Google ID token' })
   async googleAuth(
     @Body() dto: GoogleAuthDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.googleAuth(dto);
+      await this.authService.googleAuth(dto, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -66,10 +69,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Login with email and password' })
   async login(
     @Body() dto: LoginDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.login(dto);
+      await this.authService.login(dto, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -101,7 +105,7 @@ export class AuthController {
     }
 
     const { accessToken, refreshToken, user } =
-      await this.authService.refreshTokens(parsed.userId, parsed.token);
+      await this.authService.refreshTokens(parsed.userId, parsed.token, req.ip ?? 'unknown');
 
     res.cookie(
       'refresh_token',
@@ -113,6 +117,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @SkipOnboarding()
   @ApiOperation({ summary: 'Logout and revoke refresh token' })
   async logout(
     @Req() req: AuthenticatedRequest,

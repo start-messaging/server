@@ -29,9 +29,8 @@ function generateSendOtpExamples(apiKey: string): LanguageExamples {
   -H "X-API-Key: ${apiKey}" \\
   -d '{
     "phoneNumber": "+919876543210",
-    "otp": "123456",
     "templateId": "TEMPLATE_ID",
-    "variables": { "appName": "YourApp" }
+    "variables": { "otp": "123456", "appName": "YourApp" }
   }'`,
 
     nodejs: `const response = await fetch('${BASE_URL}/otp/send', {
@@ -42,9 +41,8 @@ function generateSendOtpExamples(apiKey: string): LanguageExamples {
   },
   body: JSON.stringify({
     phoneNumber: '+919876543210',
-    otp: '123456',
     templateId: 'TEMPLATE_ID',
-    variables: { appName: 'YourApp' },
+    variables: { otp: '123456', appName: 'YourApp' },
   }),
 });
 const data = await response.json();`,
@@ -59,9 +57,8 @@ response = requests.post(
     },
     json={
         "phoneNumber": "+919876543210",
-        "otp": "123456",
         "templateId": "TEMPLATE_ID",
-        "variables": {"appName": "YourApp"},
+        "variables": {"otp": "123456", "appName": "YourApp"},
     },
 )
 data = response.json()`,
@@ -76,9 +73,8 @@ curl_setopt_array($ch, [
     ],
     CURLOPT_POSTFIELDS => json_encode([
         'phoneNumber' => '+919876543210',
-        'otp' => '123456',
         'templateId' => 'TEMPLATE_ID',
-        'variables' => ['appName' => 'YourApp'],
+        'variables' => ['otp' => '123456', 'appName' => 'YourApp'],
     ]),
 ]);
 $response = curl_exec($ch);
@@ -91,12 +87,12 @@ HttpRequest request = HttpRequest.newBuilder()
     .header("Content-Type", "application/json")
     .header("X-API-Key", "${apiKey}")
     .POST(HttpRequest.BodyPublishers.ofString(
-        "{\\"phoneNumber\\":\\"+919876543210\\",\\"otp\\":\\"123456\\",\\"templateId\\":\\"TEMPLATE_ID\\",\\"variables\\":{\\"appName\\":\\"YourApp\\"}}"
+        "{\\"phoneNumber\\":\\"+919876543210\\",\\"templateId\\":\\"TEMPLATE_ID\\",\\"variables\\":{\\"otp\\":\\"123456\\",\\"appName\\":\\"YourApp\\"}}"
     ))
     .build();
 HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());`,
 
-    go: `body := bytes.NewBufferString(\`{"phoneNumber":"+919876543210","otp":"123456","templateId":"TEMPLATE_ID","variables":{"appName":"YourApp"}}\`)
+    go: `body := bytes.NewBufferString(\`{"phoneNumber":"+919876543210","templateId":"TEMPLATE_ID","variables":{"otp":"123456","appName":"YourApp"}}\`)
 req, _ := http.NewRequest("POST", "${BASE_URL}/otp/send", body)
 req.Header.Set("Content-Type", "application/json")
 req.Header.Set("X-API-Key", "${apiKey}")
@@ -117,7 +113,7 @@ function generateUsageGuide(apiKey: string): UsageGuideResponse {
       sendOtp: {
         title: 'Send OTP',
         description:
-          'Send a one-time password to a phone number. Fields: phoneNumber (E.164 format, e.g. +919876543210), otp (4-8 digit code you generate), templateId (optional — template ID from GET /templates; omit to use default), variables (optional — custom placeholder values like { "appName": "YourApp" }; "otp" cannot be overridden).',
+          'Send a one-time password to a phone number. Fields: phoneNumber (E.164 format), templateId (optional), and variables (Must contain "otp" — a 4-8 digit code you generate, plus optional custom placeholders like "appName").',
         endpoint: 'POST /otp/send',
         languages: generateSendOtpExamples(apiKey),
       },

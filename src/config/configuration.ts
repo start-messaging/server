@@ -7,6 +7,9 @@ export default () => ({
     username: process.env.DATABASE_USERNAME,
     password: process.env.DATABASE_PASSWORD,
   },
+  redis: {
+    url: process.env.REDIS_URL,
+  },
   auth: {
     bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS ?? '10', 10),
   },
@@ -22,6 +25,16 @@ export default () => ({
       senderId: process.env.FAST2SMS_SENDER_ID,
       dltTemplateId: process.env.FAST2SMS_DLT_TEMPLATE_ID,
     },
+    twoFactor: {
+      apiKey: process.env.TWOFACTOR_API_KEY,
+      templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP',
+    },
+  },
+  mailgun: {
+    apiKey: process.env.MAILGUN_API_KEY,
+    domain: process.env.MAILGUN_DOMAIN,
+    fromName: process.env.MAILGUN_FROM_NAME ?? 'StartMessaging',
+    fromEmail: process.env.MAILGUN_FROM_EMAIL,
   },
   payments: {
     razorpay: {

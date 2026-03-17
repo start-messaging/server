@@ -13,6 +13,7 @@ import { MobileOtp } from './entities/mobile-otp.entity.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { SubmitKycDto } from './dto/submit-kyc.dto.js';
 import { KycStatus } from './enums/kyc-status.enum.js';
+import { EmailService } from '../common/services/email.service.js';
 
 @Injectable()
 export class UsersService {
@@ -27,6 +28,7 @@ export class UsersService {
     @InjectRepository(MobileOtp)
     private readonly mobileOtpRepository: Repository<MobileOtp>,
     private readonly config: ConfigService,
+    private readonly emailService: EmailService,
   ) {
     this.otpExpiryMinutes = this.config.get<number>('otp.expiryMinutes') ?? 5;
     this.otpMaxAttempts = 3;
@@ -105,7 +107,16 @@ export class UsersService {
       kycSubmittedAt: new Date(),
       kycRejectionReason: null,
     });
-    return this.usersRepository.findOneOrFail({ where: { id: userId } });
+    const user = await this.usersRepository.findOneOrFail({ where: { id: userId } });
+    
+    // Send acknowledgement email
+    if (user.email && user.businessName) {
+      this.emailService.sendKycSubmissionEmail(user.email, user.businessName).catch(err => {
+        console.error(`Failed to send KYC submission email: ${err.message}`);
+      });
+    }
+
+    return user;
   }
 
   async getKycDetails(userId: string): Promise<Partial<User>> {
@@ -161,7 +172,21 @@ export class UsersService {
     }
 
     await this.usersRepository.update(userId, updateData);
-    return this.usersRepository.findOneOrFail({ where: { id: userId } });
+    const user = await this.usersRepository.findOneOrFail({ where: { id: userId } });
+
+    // Send status update email
+    if (user.email && user.businessName) {
+      this.emailService.sendKycStatusUpdateEmail(
+        user.email,
+        user.businessName,
+        user.kycStatus,
+        user.kycRejectionReason ?? undefined
+      ).catch(err => {
+        console.error(`Failed to send KYC status update email: ${err.message}`);
+      });
+    }
+
+    return user;
   }
 
   async countByKycStatus(status: KycStatus): Promise<number> {
@@ -321,6 +346,29 @@ export class UsersService {
       currentStep,
       isComplete: user.kycStatus === KycStatus.APPROVED,
       steps,
+    };
+  }
+
+  async updateLastLogin(userId: string, lastLoginIp: string): Promise<void> {
+    await this.usersRepository.update(userId, {
+      lastLoginAt: new Date(),
+      lastLoginIp,
+    });
+  }
+
+  async getDashboardStats() {
+    const now = new Date();
+    const todayStart = new Date(now.setHours(0, 0, 0, 0));
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const [newToday, newThisWeek] = await Promise.all([
+      this.usersRepository.count({ where: { createdAt: MoreThan(todayStart) } }),
+      this.usersRepository.count({ where: { createdAt: MoreThan(sevenDaysAgo) } }),
+    ]);
+
+    return {
+      newToday,
+      newThisWeek,
     };
   }
 }

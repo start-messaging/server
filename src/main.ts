@@ -1,3 +1,4 @@
+import './telemetry.js';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -8,6 +9,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module.js';
 import { TransformResponseInterceptor } from './common/interceptors/transform-response.interceptor.js';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -32,7 +34,7 @@ async function bootstrap() {
     }),
   );
 
-  app.useGlobalInterceptors(new TransformResponseInterceptor());
+  app.useGlobalInterceptors(new TransformResponseInterceptor(), new LoggingInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
   const swaggerConfig = new DocumentBuilder()
