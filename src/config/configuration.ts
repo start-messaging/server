@@ -27,7 +27,7 @@ export default () => ({
     },
     twoFactor: {
       apiKey: process.env.TWOFACTOR_API_KEY,
-      templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP1',
+      templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP',
     },
   },
   mailgun: {

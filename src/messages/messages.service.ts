@@ -88,6 +88,11 @@ export class MessagesService {
       }
     }
 
+    // Reset cost for failed/expired messages to reflect actual spend
+    if (newStatus === MessageStatus.FAILED || newStatus === MessageStatus.EXPIRED) {
+      extraFields = { ...extraFields, costAmount: 0 };
+    }
+
     return this.updateStatus(message.id, newStatus, extraFields);
   }
 
@@ -280,7 +285,10 @@ export class MessagesService {
     const result = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'totalMessages')
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'totalSpent')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'totalSpent',
+      )
       .addSelect(
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.QUEUED}')`,
         'queued',
@@ -321,7 +329,10 @@ export class MessagesService {
     const result = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'totalMessages')
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'totalRevenue')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'totalRevenue',
+      )
       .getRawOne();
  
     return {
@@ -397,7 +408,10 @@ export class MessagesService {
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
         'failed',
       )
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'cost')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'cost',
+      )
       .where('m.userId = :userId', { userId })
       .andWhere('m.createdAt >= :rangeStart', { rangeStart });
 
@@ -410,7 +424,10 @@ export class MessagesService {
     const totalStats = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'messages')
-      .addSelect('COALESCE(SUM(m.costAmount), 0)', 'cost')
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'cost',
+      )
       .where('m.userId = :userId', { userId })
       .getRawOne();
 

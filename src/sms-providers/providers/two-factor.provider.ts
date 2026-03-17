@@ -17,7 +17,7 @@ export class TwoFactorProvider implements SmsProvider {
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('sms.twoFactor.apiKey') ?? '';
-    this.templateName = this.config.get<string>('sms.twoFactor.templateName') ?? 'OTP1';
+    this.templateName = this.config.get<string>('sms.twoFactor.templateName') ?? 'OTP';
   }
 
   get name(): string {

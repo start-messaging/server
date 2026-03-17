@@ -14,6 +14,7 @@ import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { GoogleAuthDto } from './dto/google-auth.dto.js';
 import { Public } from '../common/decorators/public.decorator.js';
+import { SkipOnboarding } from '../common/decorators/skip-onboarding.decorator.js';
 import type { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface.js';
 
 @ApiTags('Auth')
@@ -116,6 +117,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @SkipOnboarding()
   @ApiOperation({ summary: 'Logout and revoke refresh token' })
   async logout(
     @Req() req: AuthenticatedRequest,

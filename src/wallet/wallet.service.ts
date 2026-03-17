@@ -106,7 +106,7 @@ export class WalletService {
     referenceType?: string,
     referenceId?: string,
   ): Promise<WalletTransaction> {
-    const wallet = await manager
+    let wallet = await manager
       .getRepository(Wallet)
       .createQueryBuilder('wallet')
       .setLock('pessimistic_write')
@@ -114,7 +114,8 @@ export class WalletService {
       .getOne();
 
     if (!wallet) {
-      throw new NotFoundException('Wallet not found');
+      wallet = manager.getRepository(Wallet).create({ userId, balance: 0 });
+      wallet = await manager.save(wallet);
     }
 
     const balanceBefore = Number(wallet.balance);
@@ -145,7 +146,7 @@ export class WalletService {
     referenceType?: string,
     referenceId?: string,
   ): Promise<WalletTransaction> {
-    const wallet = await manager
+    let wallet = await manager
       .getRepository(Wallet)
       .createQueryBuilder('wallet')
       .setLock('pessimistic_write')
@@ -153,7 +154,8 @@ export class WalletService {
       .getOne();
 
     if (!wallet) {
-      throw new NotFoundException('Wallet not found');
+      wallet = manager.getRepository(Wallet).create({ userId, balance: 0 });
+      wallet = await manager.save(wallet);
     }
 
     const balanceBefore = Number(wallet.balance);
