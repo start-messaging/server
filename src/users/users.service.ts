@@ -44,6 +44,10 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { email } });
   }
 
+  async findByMobileNumber(mobileNumber: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { mobileNumber } });
+  }
+
   async findByGoogleId(googleId: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { googleId } });
   }
@@ -54,6 +58,14 @@ export class UsersService {
   }
 
   async update(id: string, dto: UpdateUserDto): Promise<User> {
+    if (dto.mobileNumber) {
+      const existing = await this.usersRepository.findOne({
+        where: { mobileNumber: dto.mobileNumber, id: Not(id) },
+      });
+      if (existing) {
+        throw new BadRequestException('Mobile number is already associated with another account.');
+      }
+    }
     await this.usersRepository.update(id, dto);
     return this.usersRepository.findOneOrFail({ where: { id } });
   }
@@ -62,12 +74,29 @@ export class UsersService {
     return this.usersRepository.count({ where: { isActive: true } });
   }
 
-  async findAll(page: number, limit: number): Promise<[User[], number]> {
-    return this.usersRepository.findAndCount({
-      skip: (page - 1) * limit,
-      take: limit,
-      order: { createdAt: 'DESC' },
-    });
+  async findAll(page: number, limit: number, search?: string, status?: string): Promise<[User[], number]> {
+    let qb = this.usersRepository.createQueryBuilder('user');
+
+    if (search) {
+      qb = qb.andWhere(
+        '(user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.mobileNumber ILIKE :search OR user.businessName ILIKE :search)',
+        { search: `%${search}%` }
+      );
+    }
+
+    if (status) {
+      if (status === 'active') {
+        qb = qb.andWhere('user.isActive = true');
+      } else if (status === 'suspended') {
+        qb = qb.andWhere('user.isActive = false');
+      }
+    }
+
+    return qb
+      .orderBy('user.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
   }
 
   async setActive(id: string, isActive: boolean): Promise<User> {
@@ -140,16 +169,28 @@ export class UsersService {
     status: KycStatus | undefined,
     page: number,
     limit: number,
+    search?: string,
   ): Promise<[User[], number]> {
-    const where = status
-      ? { kycStatus: status }
-      : { kycStatus: Not(KycStatus.NOT_SUBMITTED) };
-    return this.usersRepository.findAndCount({
-      where,
-      skip: (page - 1) * limit,
-      take: limit,
-      order: { kycSubmittedAt: 'DESC' },
-    });
+    let qb = this.usersRepository.createQueryBuilder('user');
+
+    if (status) {
+      qb = qb.andWhere('user.kycStatus = :status', { status });
+    } else {
+      qb = qb.andWhere('user.kycStatus != :notSubmitted', { notSubmitted: KycStatus.NOT_SUBMITTED });
+    }
+
+    if (search) {
+      qb = qb.andWhere(
+        '(user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.mobileNumber ILIKE :search OR user.businessName ILIKE :search)',
+        { search: `%${search}%` }
+      );
+    }
+
+    return qb
+      .orderBy('user.kycSubmittedAt', 'DESC', 'NULLS LAST')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
   }
 
   async reviewKyc(
@@ -197,6 +238,16 @@ export class UsersService {
     userId: string,
     mobileNumber: string,
   ): Promise<string> {
+    // Check if the mobile number is already in use by another account
+    const existingUser = await this.usersRepository.findOne({
+      where: { mobileNumber, id: Not(userId) },
+    });
+    if (existingUser) {
+      throw new BadRequestException(
+        'Mobile number is already associated with another account.',
+      );
+    }
+
     // Rate limit: max N OTPs per hour
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const recentCount = await this.mobileOtpRepository.count({

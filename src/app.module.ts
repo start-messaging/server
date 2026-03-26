@@ -22,6 +22,7 @@ import { CommonModule } from './common/common.module.js';
 import { RedisModule } from './common/redis.module.js';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware.js';
 import { WebhooksModule } from './webhooks/webhooks.module.js';
+import { TelemetryModule } from './telemetry.module.js';
 import { CombinedAuthGuard } from './auth/guards/combined-auth.guard.js';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
 import { ApiKeyAuthGuard } from './auth/guards/api-key-auth.guard.js';
@@ -77,6 +78,7 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
     ChannelsModule,
     RedisModule,
     WebhooksModule,
+    TelemetryModule,
   ],
   providers: [
     JwtAuthGuard,

@@ -12,13 +12,12 @@ import { logs, SeverityNumber } from '@opentelemetry/api-logs';
 import { ErrorCodes } from '../constants/error-codes.constant.js';
 import { ApiErrorResponse } from '../interfaces/api-response.interface.js';
 
-const otelLogger = logs.getLogger('start-messaging-server');
-
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
   catch(exception: unknown, host: ArgumentsHost) {
+    const otelLogger = logs.getLogger('start-messaging-server');
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();

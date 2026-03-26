@@ -9,13 +9,12 @@ import { Observable, tap } from 'rxjs';
 import { logs, SeverityNumber } from '@opentelemetry/api-logs';
 import { maskSensitiveData } from '../utils/mask-data.util.js';
 
-const otelLogger = logs.getLogger('start-messaging-server');
-
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
   private readonly logger = new Logger('HTTP');
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const otelLogger = logs.getLogger('start-messaging-server');
     const http = context.switchToHttp();
     const req = http.getRequest();
     const res = http.getResponse();

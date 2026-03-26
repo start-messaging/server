@@ -18,6 +18,7 @@ import type { Readable } from 'stream';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto.js';
+import { UserFilterQueryDto } from './dto/user-filter-query.dto.js';
 import { paginatedResponse } from '../common/utils/pagination.util.js';
 import { excludePassword } from '../common/utils/user.util.js';
 import { R2UploadService } from '../common/services/r2-upload.service.js';
@@ -53,10 +54,12 @@ export class AdminController {
   // User management
   @Get('users')
   @ApiOperation({ summary: 'List all users (paginated)' })
-  async getUsers(@Query() query: PaginationQueryDto) {
+  async getUsers(@Query() query: UserFilterQueryDto) {
     const [items, total] = await this.usersService.findAll(
       query.page,
       query.limit,
+      query.search,
+      query.status,
     );
     const sanitized = items.map(excludePassword);
     return paginatedResponse(sanitized, total, query.page, query.limit);
@@ -80,6 +83,7 @@ export class AdminController {
       query.status,
       query.page,
       query.limit,
+      query.search,
     );
     const sanitized = items.map(excludePassword);
     return paginatedResponse(sanitized, total, query.page, query.limit);
@@ -181,6 +185,12 @@ export class AdminController {
     };
   }
 
+  @Get('dashboard/daily-usage')
+  @ApiOperation({ summary: 'Daily usage per user for a specific date' })
+  async getDailyUsage(@Query('date') dateParam?: string) {
+    return this.messagesService.getAdminDailyUsage(dateParam);
+  }
+
   // SMS provider wallet
   @Get('sms-wallet')
   @ApiOperation({ summary: 'Get Fast2SMS wallet balance' })
@@ -215,16 +225,18 @@ export class AdminController {
     summary: 'Customer overview: wallet, message stats, API key count',
   })
   async getUserOverview(@Param('userId') userId: string) {
-    const [wallet, messageStats, apiKeyCount] = await Promise.all([
+    const [wallet, messageStats, apiKeyCount, messagesTrend] = await Promise.all([
       this.walletService.getWallet(userId),
       this.messagesService.getAdminUserStats(userId),
       this.apiKeysService.countByUser(userId),
+      this.messagesService.getDashboardTrends(userId, 7),
     ]);
 
     return {
       wallet: { balance: Number(wallet.balance), currency: wallet.currency },
       messages: messageStats,
       apiKeyCount,
+      messagesTrend,
     };
   }
 
