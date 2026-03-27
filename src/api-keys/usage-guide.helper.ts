@@ -113,7 +113,7 @@ function generateUsageGuide(apiKey: string): UsageGuideResponse {
       sendOtp: {
         title: 'Send OTP',
         description:
-          'Send a one-time password to a phone number. Fields: phoneNumber (E.164 format), templateId (optional), and variables (Must contain "otp" — a 4-8 digit code you generate, plus optional custom placeholders like "appName").',
+          'Send a one-time password to a phone number. Fields: phoneNumber (E.164 format), templateId (optional), and variables (Must contain "otp" — a 4-6 digit code you generate, plus optional custom placeholders like "appName").',
         endpoint: 'POST /otp/send',
         languages: generateSendOtpExamples(apiKey),
       },

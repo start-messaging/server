@@ -11,10 +11,10 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 
 export class OtpVariablesDto {
-  @ApiProperty({ example: '123456', description: '4-8 digit OTP code to send' })
+  @ApiProperty({ example: '123456', description: '4-6 digit OTP code to send' })
   @IsString()
-  @Matches(/^\d{4,8}$/, {
-    message: 'OTP must be a 4-8 digit numeric string',
+  @Matches(/^\d{4,6}$/, {
+    message: 'OTP must be a 4-6 digit numeric string',
   })
   otp: string;
 
@@ -48,7 +48,7 @@ export class SendOtpDto {
 
   @ApiProperty({
     description:
-      'Template variables including the OTP code. Must contain an "otp" key with a 4-8 digit string.',
+      'Template variables including the OTP code. Must contain an "otp" key with a 4-6 digit string.',
     example: { otp: '123456', appName: 'YourApp', expiry: '5' },
   })
   @IsObject()

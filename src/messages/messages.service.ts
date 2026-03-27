@@ -475,4 +475,57 @@ export class MessagesService {
       failed: parseInt(r.failed, 10),
     }));
   }
+
+  async getAdminDailyUsage(dateString?: string) {
+    const startDate = dateString ? new Date(dateString) : new Date();
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + 1);
+
+    const result = await this.messageRepository
+      .createQueryBuilder('m')
+      .leftJoin('m.user', 'user')
+      .select('user.id', 'userId')
+      .addSelect('user.firstName', 'firstName')
+      .addSelect('user.lastName', 'lastName')
+      .addSelect('user.email', 'email')
+      .addSelect('user.businessName', 'businessName')
+      .addSelect('COUNT(*)', 'totalMessages')
+      .addSelect(
+        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`,
+        'deliveredCount',
+      )
+      .addSelect(
+        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
+        'failedCount',
+      )
+      .addSelect(
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        'totalSpent',
+      )
+      .where('m.createdAt >= :startDate', { startDate })
+      .andWhere('m.createdAt < :endDate', { endDate })
+      .andWhere('user.id IS NOT NULL')
+      .groupBy('user.id')
+      .addGroupBy('user.firstName')
+      .addGroupBy('user.lastName')
+      .addGroupBy('user.email')
+      .addGroupBy('user.businessName')
+      .orderBy('"totalMessages"', 'DESC')
+      .getRawMany();
+
+    return result.map((r) => ({
+      user: {
+        id: r.userId,
+        firstName: r.firstName,
+        lastName: r.lastName,
+        email: r.email,
+        businessName: r.businessName,
+      },
+      totalMessages: parseInt(r.totalMessages, 10),
+      deliveredCount: parseInt(r.deliveredCount, 10),
+      failedCount: parseInt(r.failedCount, 10),
+      totalSpent: parseFloat(r.totalSpent),
+    }));
+  }
 }

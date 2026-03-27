@@ -45,6 +45,15 @@ export class AuthService {
       throw new ConflictException('Email already registered');
     }
 
+    if (dto.mobileNumber) {
+      const existingMobile = await this.usersService.findByMobileNumber(
+        dto.mobileNumber,
+      );
+      if (existingMobile) {
+        throw new ConflictException('Mobile number is already registered');
+      }
+    }
+
     const passwordHash = await bcrypt.hash(dto.password, this.bcryptRounds);
     const role = dto.role ?? UserRole.CUSTOMER;
 
