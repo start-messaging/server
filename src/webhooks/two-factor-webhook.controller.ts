@@ -1,4 +1,13 @@
-import { Controller, Post, Get, Body, Query, Logger, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Query,
+  Logger,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { Public } from '../common/decorators/public.decorator.js';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -41,15 +50,11 @@ export class TwoFactorWebhookController {
 
     this.logger.log(`Received 2Factor webhook: ${JSON.stringify(normalized)}`);
 
-    await this.webhookQueue.add(
-      'two-factor-update',
-      normalized,
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-        removeOnComplete: true,
-      },
-    );
+    await this.webhookQueue.add('two-factor-update', normalized, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: true,
+    });
 
     return { received: true };
   }

@@ -27,7 +27,7 @@ import { MessagesService } from '../messages/messages.service.js';
 import { ChannelsService } from '../channels/channels.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { ApiKeysService } from '../api-keys/api-keys.service.js';
-import { UpdateUserStatusDto } from './dto/update-user-status.dto.js';
+import { AdminUpdateUserDto } from './dto/admin-update-user.dto.js';
 import { ReviewKycDto } from './dto/review-kyc.dto.js';
 import { KycFilterQueryDto } from './dto/kyc-filter-query.dto.js';
 import { AdminMessageQueryDto } from './dto/admin-message-query.dto.js';
@@ -53,25 +53,39 @@ export class AdminController {
 
   // User management
   @Get('users')
-  @ApiOperation({ summary: 'List all users (paginated)' })
+  @ApiOperation({
+    summary: 'List all users (paginated, searchable, wallet balance)',
+  })
   async getUsers(@Query() query: UserFilterQueryDto) {
     const [items, total] = await this.usersService.findAll(
       query.page,
       query.limit,
       query.search,
       query.status,
+      query.kycStatus,
+      query.sortBy,
+      query.sortOrder,
     );
-    const sanitized = items.map(excludePassword);
+    const balances = await this.walletService.getBalancesByUserIds(
+      items.map((u) => u.id),
+    );
+    const sanitized = items.map((u) => ({
+      ...excludePassword(u),
+      walletBalance: balances.get(u.id) ?? 0,
+    }));
     return paginatedResponse(sanitized, total, query.page, query.limit);
   }
 
   @Patch('users/:id')
-  @ApiOperation({ summary: 'Activate or suspend a user' })
-  async updateUserStatus(
+  @ApiOperation({
+    summary:
+      'Update user (active flag, admin call tracking). Admin-only fields are never exposed on customer APIs.',
+  })
+  async updateUserAdmin(
     @Param('id') id: string,
-    @Body() dto: UpdateUserStatusDto,
+    @Body() dto: AdminUpdateUserDto,
   ) {
-    const user = await this.usersService.setActive(id, dto.isActive);
+    const user = await this.usersService.updateByAdmin(id, dto);
     return excludePassword(user);
   }
 
@@ -92,7 +106,7 @@ export class AdminController {
   @Get('kyc/:userId')
   @ApiOperation({ summary: 'Get KYC details for a user' })
   async getKycDetail(@Param('userId') userId: string) {
-    const user = await this.usersService.findById(userId);
+    const user = await this.usersService.findByIdForAdmin(userId);
     if (!user) return null;
     return excludePassword(user);
   }
@@ -225,12 +239,13 @@ export class AdminController {
     summary: 'Customer overview: wallet, message stats, API key count',
   })
   async getUserOverview(@Param('userId') userId: string) {
-    const [wallet, messageStats, apiKeyCount, messagesTrend] = await Promise.all([
-      this.walletService.getWallet(userId),
-      this.messagesService.getAdminUserStats(userId),
-      this.apiKeysService.countByUser(userId),
-      this.messagesService.getDashboardTrends(userId, 7),
-    ]);
+    const [wallet, messageStats, apiKeyCount, messagesTrend] =
+      await Promise.all([
+        this.walletService.getWallet(userId),
+        this.messagesService.getAdminUserStats(userId),
+        this.apiKeysService.countByUser(userId),
+        this.messagesService.getDashboardTrends(userId, 7),
+      ]);
 
     return {
       wallet: { balance: Number(wallet.balance), currency: wallet.currency },

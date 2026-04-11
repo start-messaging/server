@@ -14,13 +14,17 @@ export class SmsWebhookProcessor extends WorkerHost {
 
   async process(job: Job<any, any, string>): Promise<any> {
     const payload = job.data;
-    this.logger.log(`Processing 2Factor webhook update: ${JSON.stringify(payload)}`);
+    this.logger.log(
+      `Processing 2Factor webhook update: ${JSON.stringify(payload)}`,
+    );
 
     const sessionId = payload.SessionId;
     const smsStatus = payload.SmsStatus;
 
     if (!sessionId || !smsStatus) {
-      this.logger.warn(`Invalid 2Factor webhook payload: ${JSON.stringify(payload)}`);
+      this.logger.warn(
+        `Invalid 2Factor webhook payload: ${JSON.stringify(payload)}`,
+      );
       return { success: false, reason: 'Missing SessionId or SmsStatus' };
     }
 
@@ -31,9 +35,10 @@ export class SmsWebhookProcessor extends WorkerHost {
     }
 
     const mappedStatus = this.mapTwoFactorStatus(smsStatus);
-    
+
     await this.messagesService.handleStatusUpdate(message, mappedStatus, {
-      providerStatusDescription: payload.StatusDescription || payload.StatusName,
+      providerStatusDescription:
+        payload.StatusDescription || payload.StatusName,
       metadata: { ...message.metadata, webhook_payload: payload },
       deliveredAt: mappedStatus === MessageStatus.DELIVERED ? new Date() : null,
     });
@@ -44,8 +49,16 @@ export class SmsWebhookProcessor extends WorkerHost {
   private mapTwoFactorStatus(status: string): MessageStatus {
     const s = (status || '').toUpperCase();
     if (s.includes('DELIVERED')) return MessageStatus.DELIVERED;
-    if (s.includes('FAILED') || s.includes('REJECTED') || s.includes('UNDELIVERED') || s.includes('NO-ANSWER') || s.includes('ERROR')) return MessageStatus.FAILED;
-    if (s.includes('SENT') || s.includes('SUBMITTED')) return MessageStatus.SENT;
+    if (
+      s.includes('FAILED') ||
+      s.includes('REJECTED') ||
+      s.includes('UNDELIVERED') ||
+      s.includes('NO-ANSWER') ||
+      s.includes('ERROR')
+    )
+      return MessageStatus.FAILED;
+    if (s.includes('SENT') || s.includes('SUBMITTED'))
+      return MessageStatus.SENT;
     return MessageStatus.INITIATED;
   }
 }

@@ -17,7 +17,8 @@ export class TwoFactorProvider implements SmsProvider {
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('sms.twoFactor.apiKey') ?? '';
-    this.templateName = this.config.get<string>('sms.twoFactor.templateName') ?? 'OTP';
+    this.templateName =
+      this.config.get<string>('sms.twoFactor.templateName') ?? 'OTP';
   }
 
   get name(): string {
@@ -28,8 +29,8 @@ export class TwoFactorProvider implements SmsProvider {
     return 1; // Primary provider
   }
 
-  async isHealthy(): Promise<boolean> {
-    return !!this.apiKey;
+  isHealthy(): Promise<boolean> {
+    return Promise.resolve(!!this.apiKey);
   }
 
   async sendSms(params: SendSmsParams): Promise<SendSmsResult> {
@@ -45,7 +46,8 @@ export class TwoFactorProvider implements SmsProvider {
     }
 
     // Endpoint: https://2factor.in/API/V1/{api_key}/SMS/{phone_number}/{otp_val}/{template_name}
-    const templateName = params.templateIdentifiers?.['2factor'] || this.templateName;
+    const templateName =
+      params.templateIdentifiers?.['2factor'] || this.templateName;
     const url = `${this.baseUrl}/${this.apiKey}/SMS/${params.to}/${otp}/${templateName}`;
 
     try {
@@ -62,11 +64,11 @@ export class TwoFactorProvider implements SmsProvider {
       return {
         providerMsgId: '',
         status: 'failed',
-        failureReason: response.data.Details || 'Unknown error from 2Factor.in',
+        failureReason: response.data.Details || 'Unknown error',
         errorType: 'service',
       };
-    } catch (error) {
-      const errorMessage = error.response?.data?.Details || error.message;
+    } catch (error: any) {
+      const errorMessage = error?.response?.data?.Details || error?.message;
       this.logger.error(`2Factor.in API Error: ${errorMessage}`);
       return {
         providerMsgId: '',
@@ -77,14 +79,15 @@ export class TwoFactorProvider implements SmsProvider {
     }
   }
 
-  async getDeliveryStatus(providerMsgId: string): Promise<DlrResult> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  getDeliveryStatus(providerMsgId: string): Promise<DlrResult> {
     // 2Factor.in OTP API primarily uses webhooks for status updates.
     // The "PULL" API is not consistently documented for special OTP session IDs.
     // We return 'unknown' and rely on the webhook-driven flow.
-    return {
+    return Promise.resolve({
       status: 'unknown',
       description: 'DLR tracking handled via webhooks',
-    };
+    });
   }
 
   private extractOtp(content: string): string | null {

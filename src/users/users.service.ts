@@ -40,6 +40,15 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { id } });
   }
 
+  /** Includes admin-only columns (call tracking). Use only from admin routes. */
+  async findByIdForAdmin(id: string): Promise<User | null> {
+    return this.usersRepository
+      .createQueryBuilder('user')
+      .addSelect(['user.adminLastCalledAt', 'user.adminCallNotes'])
+      .where('user.id = :id', { id })
+      .getOne();
+  }
+
   async findByEmail(email: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { email } });
   }
@@ -63,7 +72,9 @@ export class UsersService {
         where: { mobileNumber: dto.mobileNumber, id: Not(id) },
       });
       if (existing) {
-        throw new BadRequestException('Mobile number is already associated with another account.');
+        throw new BadRequestException(
+          'Mobile number is already associated with another account.',
+        );
       }
     }
     await this.usersRepository.update(id, dto);
@@ -74,26 +85,83 @@ export class UsersService {
     return this.usersRepository.count({ where: { isActive: true } });
   }
 
-  async findAll(page: number, limit: number, search?: string, status?: string): Promise<[User[], number]> {
-    let qb = this.usersRepository.createQueryBuilder('user');
+  async findAll(
+    page: number,
+    limit: number,
+    search?: string,
+    accountStatus?: string,
+    kycStatus?: KycStatus,
+    sortBy?: string,
+    sortOrder?: 'asc' | 'desc',
+  ): Promise<[User[], number]> {
+    let qb = this.usersRepository
+      .createQueryBuilder('user')
+      .addSelect(['user.adminLastCalledAt', 'user.adminCallNotes']);
 
-    if (search) {
+    const term = search?.trim();
+    if (term) {
+      const q = `%${term}%`;
       qb = qb.andWhere(
-        '(user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.mobileNumber ILIKE :search OR user.businessName ILIKE :search)',
-        { search: `%${search}%` }
+        `(
+          user.firstName ILIKE :search OR user.lastName ILIKE :search OR
+          CONCAT(COALESCE(user.firstName, ''), ' ', COALESCE(user.lastName, '')) ILIKE :search OR
+          user.email ILIKE :search OR user.mobileNumber ILIKE :search OR
+          user.businessName ILIKE :search OR user.companyName ILIKE :search OR
+          user.websiteUrl ILIKE :search OR user.pan ILIKE :search OR user.gstin ILIKE :search
+        )`,
+        { search: q },
       );
     }
 
-    if (status) {
-      if (status === 'active') {
+    if (accountStatus) {
+      if (accountStatus === 'active') {
         qb = qb.andWhere('user.isActive = true');
-      } else if (status === 'suspended') {
+      } else if (accountStatus === 'suspended') {
         qb = qb.andWhere('user.isActive = false');
       }
     }
 
+    if (kycStatus !== undefined && kycStatus !== null) {
+      qb = qb.andWhere('user.kycStatus = :kycStatus', { kycStatus });
+    }
+
+    const dir = sortOrder === 'asc' ? 'ASC' : 'DESC';
+    const field = sortBy ?? 'created_at';
+
+    switch (field) {
+      case 'name':
+        qb = qb.orderBy('user.firstName', dir).addOrderBy('user.lastName', dir);
+        break;
+      case 'email':
+        qb = qb.orderBy('user.email', dir);
+        break;
+      case 'last_called':
+        qb = qb.orderBy(
+          'user.adminLastCalledAt',
+          dir,
+          dir === 'DESC' ? 'NULLS LAST' : 'NULLS FIRST',
+        );
+        break;
+      case 'last_login':
+        qb = qb.orderBy(
+          'user.lastLoginAt',
+          dir,
+          dir === 'DESC' ? 'NULLS LAST' : 'NULLS FIRST',
+        );
+        break;
+      case 'kyc_status':
+        qb = qb.orderBy('user.kycStatus', dir);
+        break;
+      case 'role':
+        qb = qb.orderBy('user.role', dir);
+        break;
+      case 'created_at':
+      default:
+        qb = qb.orderBy('user.createdAt', dir);
+        break;
+    }
+
     return qb
-      .orderBy('user.createdAt', 'DESC')
       .skip((page - 1) * limit)
       .take(limit)
       .getManyAndCount();
@@ -101,7 +169,37 @@ export class UsersService {
 
   async setActive(id: string, isActive: boolean): Promise<User> {
     await this.usersRepository.update(id, { isActive });
-    return this.usersRepository.findOneOrFail({ where: { id } });
+    const user = await this.findByIdForAdmin(id);
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async updateByAdmin(
+    id: string,
+    dto: {
+      isActive?: boolean;
+      adminLastCalledAt?: string | null;
+      adminCallNotes?: string | null;
+    },
+  ): Promise<User> {
+    const updates: Partial<User> = {};
+    if (dto.isActive !== undefined) updates.isActive = dto.isActive;
+    if (dto.adminLastCalledAt !== undefined) {
+      updates.adminLastCalledAt =
+        dto.adminLastCalledAt === null ? null : new Date(dto.adminLastCalledAt);
+    }
+    if (dto.adminCallNotes !== undefined) {
+      updates.adminCallNotes = dto.adminCallNotes;
+    }
+    if (Object.keys(updates).length === 0) {
+      const u = await this.findByIdForAdmin(id);
+      if (!u) throw new NotFoundException('User not found');
+      return u;
+    }
+    await this.usersRepository.update(id, updates);
+    const user = await this.findByIdForAdmin(id);
+    if (!user) throw new NotFoundException('User not found');
+    return user;
   }
 
   async findByIdWithRefreshToken(id: string): Promise<User | null> {
@@ -136,13 +234,17 @@ export class UsersService {
       kycSubmittedAt: new Date(),
       kycRejectionReason: null,
     });
-    const user = await this.usersRepository.findOneOrFail({ where: { id: userId } });
-    
+    const user = await this.usersRepository.findOneOrFail({
+      where: { id: userId },
+    });
+
     // Send acknowledgement email
     if (user.email && user.businessName) {
-      this.emailService.sendKycSubmissionEmail(user.email, user.businessName).catch(err => {
-        console.error(`Failed to send KYC submission email: ${err.message}`);
-      });
+      this.emailService
+        .sendKycSubmissionEmail(user.email, user.businessName)
+        .catch((err) => {
+          console.error(`Failed to send KYC submission email: ${err.message}`);
+        });
     }
 
     return user;
@@ -176,13 +278,15 @@ export class UsersService {
     if (status) {
       qb = qb.andWhere('user.kycStatus = :status', { status });
     } else {
-      qb = qb.andWhere('user.kycStatus != :notSubmitted', { notSubmitted: KycStatus.NOT_SUBMITTED });
+      qb = qb.andWhere('user.kycStatus != :notSubmitted', {
+        notSubmitted: KycStatus.NOT_SUBMITTED,
+      });
     }
 
     if (search) {
       qb = qb.andWhere(
         '(user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.mobileNumber ILIKE :search OR user.businessName ILIKE :search)',
-        { search: `%${search}%` }
+        { search: `%${search}%` },
       );
     }
 
@@ -213,18 +317,23 @@ export class UsersService {
     }
 
     await this.usersRepository.update(userId, updateData);
-    const user = await this.usersRepository.findOneOrFail({ where: { id: userId } });
+    const user = await this.findByIdForAdmin(userId);
+    if (!user) throw new NotFoundException('User not found');
 
     // Send status update email
     if (user.email && user.businessName) {
-      this.emailService.sendKycStatusUpdateEmail(
-        user.email,
-        user.businessName,
-        user.kycStatus,
-        user.kycRejectionReason ?? undefined
-      ).catch(err => {
-        console.error(`Failed to send KYC status update email: ${err.message}`);
-      });
+      this.emailService
+        .sendKycStatusUpdateEmail(
+          user.email,
+          user.businessName,
+          user.kycStatus,
+          user.kycRejectionReason ?? undefined,
+        )
+        .catch((err) => {
+          console.error(
+            `Failed to send KYC status update email: ${err.message}`,
+          );
+        });
     }
 
     return user;
@@ -413,8 +522,12 @@ export class UsersService {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const [newToday, newThisWeek] = await Promise.all([
-      this.usersRepository.count({ where: { createdAt: MoreThan(todayStart) } }),
-      this.usersRepository.count({ where: { createdAt: MoreThan(sevenDaysAgo) } }),
+      this.usersRepository.count({
+        where: { createdAt: MoreThan(todayStart) },
+      }),
+      this.usersRepository.count({
+        where: { createdAt: MoreThan(sevenDaysAgo) },
+      }),
     ]);
 
     return {

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Wallet } from './entities/wallet.entity.js';
@@ -36,6 +36,22 @@ export class WalletService {
       return this.createWallet(userId);
     }
     return wallet;
+  }
+
+  /** Balances for many users (no row ⇒ 0). Used by admin user list. */
+  async getBalancesByUserIds(userIds: string[]): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    if (userIds.length === 0) return map;
+    for (const id of userIds) {
+      map.set(id, 0);
+    }
+    const rows = await this.walletRepository.find({
+      where: { userId: In(userIds) },
+    });
+    for (const w of rows) {
+      map.set(w.userId, Number(w.balance));
+    }
+    return map;
   }
 
   async credit(
@@ -236,7 +252,10 @@ export class WalletService {
     const stats = await this.transactionRepository
       .createQueryBuilder('t')
       .select('COALESCE(SUM(t.amount), 0)', 'totalRevenue')
-      .addSelect(`COALESCE(SUM(t.amount) FILTER (WHERE t.createdAt >= :todayStart), 0)`, 'todayRevenue')
+      .addSelect(
+        `COALESCE(SUM(t.amount) FILTER (WHERE t.createdAt >= :todayStart), 0)`,
+        'todayRevenue',
+      )
       .where('t.type = :type', { type: WalletTransactionType.DEBIT }) // Debit means usage/revenue for platform
       .setParameter('todayStart', todayStart)
       .getRawOne();
