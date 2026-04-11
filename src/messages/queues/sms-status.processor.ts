@@ -14,14 +14,21 @@ export class SmsStatusProcessor extends WorkerHost {
 
   async process(job: Job<any, any, string>): Promise<any> {
     const { messageId } = job.data;
-    
-    this.logger.debug(`Processing status check for message: ${messageId} (Attempt: ${job.attemptsMade + 1})`);
+
+    this.logger.debug(
+      `Processing status check for message: ${messageId} (Attempt: ${job.attemptsMade + 1})`,
+    );
 
     try {
       const result = await this.messagesService.syncProviderStatus(messageId);
-      
-      if (result.status === MessageStatus.DELIVERED || result.status === MessageStatus.FAILED) {
-        this.logger.log(`Message ${messageId} reached terminal state: ${result.status}`);
+
+      if (
+        result.status === MessageStatus.DELIVERED ||
+        result.status === MessageStatus.FAILED
+      ) {
+        this.logger.log(
+          `Message ${messageId} reached terminal state: ${result.status}`,
+        );
         return result;
       }
 
@@ -30,13 +37,21 @@ export class SmsStatusProcessor extends WorkerHost {
       if (jobAgeMinutes < 5) {
         throw new Error('Still pending, re-queueing for check');
       } else {
-        this.logger.warn(`Message ${messageId} timed out after 5 minutes. Marking as FAILED.`);
-        await this.messagesService.updateStatus(messageId, MessageStatus.FAILED, {
-          failureReason: 'Delivery status check timed out (5m)',
-        });
+        this.logger.warn(
+          `Message ${messageId} timed out after 5 minutes. Marking as FAILED.`,
+        );
+        await this.messagesService.updateStatus(
+          messageId,
+          MessageStatus.FAILED,
+          {
+            failureReason: 'Delivery status check timed out (5m)',
+          },
+        );
       }
     } catch (error) {
-      this.logger.error(`Error processing status for ${messageId}: ${error.message}`);
+      this.logger.error(
+        `Error processing status for ${messageId}: ${error.message}`,
+      );
       throw error; // Let BullMQ handle retry based on backoff
     }
   }

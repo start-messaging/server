@@ -5,6 +5,7 @@ import { MessagesModule } from '../messages/messages.module.js';
 import { ChannelsModule } from '../channels/channels.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
 import { ApiKeysModule } from '../api-keys/api-keys.module.js';
+import { PaymentsModule } from '../payments/payments.module.js';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { ApiKeysModule } from '../api-keys/api-keys.module.js';
     ChannelsModule,
     WalletModule,
     ApiKeysModule,
+    PaymentsModule,
   ],
   controllers: [AdminController],
 })

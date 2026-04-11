@@ -88,4 +88,11 @@ export class User extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true })
   lastLoginIp: string | null;
+
+  /** Internal: outbound sales/support call tracking (admin-only, not selected by default) */
+  @Column({ type: 'timestamptz', nullable: true, select: false })
+  adminLastCalledAt: Date | null;
+
+  @Column({ type: 'text', nullable: true, select: false })
+  adminCallNotes: string | null;
 }

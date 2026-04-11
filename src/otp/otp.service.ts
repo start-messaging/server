@@ -10,9 +10,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Repository } from 'typeorm';
 import { OtpRequest, OtpStatus } from './entities/otp-request.entity.js';
-import {
-  WalletService,
-} from '../wallet/wallet.service.js';
+import { WalletService } from '../wallet/wallet.service.js';
 import { SmsProviderFactory } from '../sms-providers/sms-provider.factory.js';
 import { MessagesService } from '../messages/messages.service.js';
 import { MessageStatus } from '../messages/entities/message.entity.js';
@@ -80,7 +78,9 @@ export class OtpService {
       });
 
       if (smsResult.status === 'failed') {
-        throw new Error(smsResult.failureReason || 'SMS Provider rejected request');
+        throw new Error(
+          smsResult.failureReason || 'SMS Provider rejected request',
+        );
       }
 
       // 5. Create Message record using the provider's returned status (usually 'sent')
@@ -93,9 +93,10 @@ export class OtpService {
         providerMsgId: smsResult.providerMsgId || null,
         status: this.mapResultStatus(smsResult.status),
         costAmount: this.costPerOtp,
-        senderId: smsResult.provider === 'fast2sms' 
-          ? this.config.get<string>('sms.fast2sms.senderId') 
-          : undefined,
+        senderId:
+          smsResult.provider === 'fast2sms'
+            ? this.config.get<string>('sms.fast2sms.senderId')
+            : undefined,
         apiKeyId,
       });
 
@@ -121,11 +122,10 @@ export class OtpService {
         phoneNumber: dto.phoneNumber,
         createdAt: message.createdAt,
       };
-
     } catch (err) {
       // Decrement rate limit on failure
       await this.decrementMobileRateLimit(dto.phoneNumber);
-      
+
       otpRequest.status = OtpStatus.FAILED;
       await this.otpRepository.save(otpRequest);
 
@@ -145,7 +145,9 @@ export class OtpService {
           apiKeyId,
         });
       } catch (msgErr) {
-        this.logger.error(`Failed to record failed message for user ${userId}: ${msgErr.message}`);
+        this.logger.error(
+          `Failed to record failed message for user ${userId}: ${msgErr.message}`,
+        );
       }
 
       throw new BadRequestException({
