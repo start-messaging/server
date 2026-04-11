@@ -60,6 +60,39 @@ export class PaymentsService {
     };
   }
 
+  /** Completed Razorpay checkout totals (wallet top-ups), for admin dashboard. */
+  async getRazorpayCompletedStats(): Promise<{
+    totalAmount: number;
+    todayAmount: number;
+    completedCount: number;
+  }> {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const row = await this.paymentRepository
+      .createQueryBuilder('p')
+      .select('COALESCE(SUM(p.amount), 0)', 'totalAmount')
+      .addSelect(
+        `COALESCE(SUM(p.amount) FILTER (WHERE p.createdAt >= :todayStart), 0)`,
+        'todayAmount',
+      )
+      .addSelect('COUNT(*)', 'completedCount')
+      .where('p.gateway = :gateway', { gateway: 'razorpay' })
+      .andWhere('p.status = :status', { status: PaymentStatus.COMPLETED })
+      .setParameter('todayStart', todayStart)
+      .getRawOne<{
+        totalAmount: string;
+        todayAmount: string;
+        completedCount: string;
+      }>();
+
+    return {
+      totalAmount: parseFloat(row?.totalAmount ?? '0'),
+      todayAmount: parseFloat(row?.todayAmount ?? '0'),
+      completedCount: parseInt(row?.completedCount ?? '0', 10),
+    };
+  }
+
   async verifyPayment(userId: string, dto: VerifyPaymentDto) {
     return this.dataSource.transaction('SERIALIZABLE', async (manager) => {
       const payment = await manager

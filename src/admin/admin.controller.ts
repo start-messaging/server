@@ -27,6 +27,7 @@ import { MessagesService } from '../messages/messages.service.js';
 import { ChannelsService } from '../channels/channels.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { ApiKeysService } from '../api-keys/api-keys.service.js';
+import { PaymentsService } from '../payments/payments.service.js';
 import { AdminUpdateUserDto } from './dto/admin-update-user.dto.js';
 import { ReviewKycDto } from './dto/review-kyc.dto.js';
 import { KycFilterQueryDto } from './dto/kyc-filter-query.dto.js';
@@ -49,6 +50,7 @@ export class AdminController {
     private readonly channelsService: ChannelsService,
     private readonly walletService: WalletService,
     private readonly apiKeysService: ApiKeysService,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   // User management
@@ -163,6 +165,7 @@ export class AdminController {
       messageTrends,
       revenueTrends,
       pendingKycCount,
+      razorpayStats,
     ] = await Promise.all([
       this.usersService.findAll(1, 1),
       this.usersService.countActive(),
@@ -172,6 +175,7 @@ export class AdminController {
       this.messagesService.getAdminTrends(7),
       this.walletService.getRevenueTrends(7),
       this.usersService.countByKycStatus(KycStatus.PENDING),
+      this.paymentsService.getRazorpayCompletedStats(),
     ]);
 
     return {
@@ -181,6 +185,9 @@ export class AdminController {
         totalMessages: messageStats.total,
         totalRevenue: revenueStats.totalRevenue,
         pendingKycCount,
+        razorpayPaymentsTotal: razorpayStats.totalAmount,
+        razorpayPaymentsToday: razorpayStats.todayAmount,
+        razorpayPaymentsCount: razorpayStats.completedCount,
       },
       growth: {
         newUsersToday: userStats.newToday,
