@@ -91,14 +91,23 @@ export class MessagesService {
         newStatus === MessageStatus.DELIVERED &&
         message.status !== MessageStatus.DELIVERED
       ) {
-        await this.walletService.debit(
-          message.userId,
-          message.costAmount,
-          `OTP delivered to ${message.phoneNumber}`,
-          'otp_usage',
-          message.id,
-          manager,
-        );
+        const debitAmount =
+          message.costAmount > 0
+            ? Number(message.costAmount)
+            : Number(message.metadata?.intendedCost || 0);
+
+        if (debitAmount > 0) {
+          await this.walletService.debit(
+            message.userId,
+            debitAmount,
+            `OTP delivered to ${message.phoneNumber}`,
+            'otp_usage',
+            message.id,
+            manager,
+          );
+          // Set costAmount now so it shows in dashboard
+          extraFields = { ...extraFields, costAmount: debitAmount };
+        }
       }
 
       return this.updateStatus(message.id, newStatus, extraFields, manager);

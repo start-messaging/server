@@ -92,7 +92,8 @@ export class OtpService {
         provider: smsResult.provider,
         providerMsgId: smsResult.providerMsgId || null,
         status: this.mapResultStatus(smsResult.status),
-        costAmount: this.costPerOtp,
+        costAmount: 0,
+        metadata: { intendedCost: this.costPerOtp },
         senderId:
           smsResult.provider === 'fast2sms'
             ? this.config.get<string>('sms.fast2sms.senderId')
@@ -140,6 +141,7 @@ export class OtpService {
           providerMsgId: smsResult?.providerMsgId || null,
           status: MessageStatus.FAILED,
           costAmount: 0,
+          metadata: { intendedCost: this.costPerOtp },
           failureReason: err.message,
           sentAt: null,
           apiKeyId,
