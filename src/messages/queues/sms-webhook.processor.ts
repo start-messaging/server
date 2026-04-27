@@ -83,17 +83,17 @@ export class SmsWebhookProcessor extends WorkerHost {
       'Message delivery failed due to message service barring on the recipient number. In many cases, this occurs when the recipient does not maintain sufficient balance, resulting in the suspension of incoming services on the number.';
 
     return {
-      '0': { status: MessageStatus.DELIVERED, reason: 'Delivered' },
-      '21': {
+      '000': { status: MessageStatus.DELIVERED, reason: 'Delivered' },
+      '021': {
         status: MessageStatus.FAILED,
         reason:
           'Facility not supported by network. This might be due to insufficient balance or message service facility being unavailable for this number.',
       },
-      '13': {
+      '013': {
         status: MessageStatus.FAILED,
         reason: barredMessage,
       },
-      '11': {
+      '011': {
         status: MessageStatus.FAILED,
         reason: barredMessage,
       },
@@ -114,23 +114,23 @@ export class SmsWebhookProcessor extends WorkerHost {
         reason:
           'Destination telecom network was temporarily unreachable. Please retry after some time.',
       },
-      '27': {
+      '027': {
         status: MessageStatus.FAILED,
         reason: 'Recipient is unreachable (switched off or out of coverage area).',
       },
-      '33': {
+      '033': {
         status: MessageStatus.FAILED,
         reason: "Message delivery failed as the recipient's network message queue is full.",
       },
-      '88': {
+      '088': {
         status: MessageStatus.FAILED,
         reason: 'Network timeout while fetching recipient details. Please retry.',
       },
-      '32': {
+      '032': {
         status: MessageStatus.FAILED,
         reason: "Recipient's phone memory is full. Message could not be delivered.",
       },
-      '5': {
+      '005': {
         status: MessageStatus.FAILED,
         reason: 'Unidentified subscriber. The recipient number is not allocated or active.',
       },
