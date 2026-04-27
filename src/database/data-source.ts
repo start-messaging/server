@@ -12,4 +12,8 @@ export default new DataSource({
   password: process.env.DATABASE_PASSWORD,
   entities: ['dist/**/*.entity.js'],
   migrations: ['dist/database/migrations/*.js'],
+  ssl:
+    process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: false }
+      : false,
 });
