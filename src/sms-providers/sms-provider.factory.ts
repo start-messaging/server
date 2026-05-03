@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Fast2SmsProvider } from './providers/fast2sms.provider.js';
 import { TwoFactorProvider } from './providers/two-factor.provider.js';
 import {
   DlrResult,
@@ -16,13 +15,10 @@ export class SmsProviderFactory {
   private readonly isMock: boolean;
 
   constructor(
-    fast2sms: Fast2SmsProvider,
     twoFactor: TwoFactorProvider,
     private readonly config: ConfigService,
   ) {
-    this.providers = [fast2sms, twoFactor].sort(
-      (a, b) => a.priority - b.priority,
-    );
+    this.providers = [twoFactor].sort((a, b) => a.priority - b.priority);
     this.isMock = this.config.get<boolean>('MOCK_SMS_SEND') === true;
   }
 

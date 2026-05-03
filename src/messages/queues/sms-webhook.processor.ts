@@ -19,7 +19,7 @@ export class SmsWebhookProcessor extends WorkerHost {
     );
 
     const sessionId = payload.SessionId;
-    const smsStatus = payload.SmsStatus;
+    const smsStatus = payload.SmsStatus || payload.Status;
 
     if (!sessionId || !smsStatus) {
       this.logger.warn(
@@ -38,7 +38,7 @@ export class SmsWebhookProcessor extends WorkerHost {
     let failureReason: string | null = null;
 
     // 1. Check Error Code first (more specific)
-    const errorCode = String(payload.Error || '');
+    const errorCode = this.normalizeErrorCode(payload.Error);
     const errorMap = this.getTwoFactorErrorMap();
 
     if (errorCode && errorMap[errorCode]) {
@@ -49,7 +49,8 @@ export class SmsWebhookProcessor extends WorkerHost {
       // 2. Fallback to status name
       mappedStatus = this.mapTwoFactorStatus(smsStatus);
       if (mappedStatus === MessageStatus.FAILED) {
-        const fullStatus = `${smsStatus} ${payload.StatusDescription || ''} ${payload.StatusName || ''}`.toUpperCase();
+        const fullStatus =
+          `${smsStatus} ${payload.StatusDescription || ''} ${payload.StatusName || ''}`.toUpperCase();
         if (fullStatus.includes('BARRED')) {
           failureReason =
             'Message delivery failed due to message service barring on the recipient number. In many cases, this occurs when the recipient does not maintain sufficient balance, resulting in the suspension of incoming services on the number.';
@@ -116,23 +117,28 @@ export class SmsWebhookProcessor extends WorkerHost {
       },
       '027': {
         status: MessageStatus.FAILED,
-        reason: 'Recipient is unreachable (switched off or out of coverage area).',
+        reason:
+          'Recipient is unreachable (switched off or out of coverage area).',
       },
       '033': {
         status: MessageStatus.FAILED,
-        reason: "Message delivery failed as the recipient's network message queue is full.",
+        reason:
+          "Message delivery failed as the recipient's network message queue is full.",
       },
       '088': {
         status: MessageStatus.FAILED,
-        reason: 'Network timeout while fetching recipient details. Please retry.',
+        reason:
+          'Network timeout while fetching recipient details. Please retry.',
       },
       '032': {
         status: MessageStatus.FAILED,
-        reason: "Recipient's phone memory is full. Message could not be delivered.",
+        reason:
+          "Recipient's phone memory is full. Message could not be delivered.",
       },
       '005': {
         status: MessageStatus.FAILED,
-        reason: 'Unidentified subscriber. The recipient number is not allocated or active.',
+        reason:
+          'Unidentified subscriber. The recipient number is not allocated or active.',
       },
       '1': {
         status: MessageStatus.FAILED,
@@ -154,6 +160,12 @@ export class SmsWebhookProcessor extends WorkerHost {
       return MessageStatus.FAILED;
     if (s.includes('SENT') || s.includes('SUBMITTED'))
       return MessageStatus.SENT;
-    return MessageStatus.INITIATED;
+    return MessageStatus.SENT;
+  }
+
+  private normalizeErrorCode(error: unknown): string {
+    if (error === null || error === undefined || error === '') return '';
+    if (typeof error !== 'string' && typeof error !== 'number') return '';
+    return String(error).padStart(3, '0');
   }
 }

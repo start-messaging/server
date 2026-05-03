@@ -6,8 +6,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+// import { InjectQueue } from '@nestjs/bullmq';
+// import { Queue } from 'bullmq';
 import { Repository } from 'typeorm';
 import { OtpRequest, OtpStatus } from './entities/otp-request.entity.js';
 import { WalletService } from '../wallet/wallet.service.js';
@@ -34,7 +34,7 @@ export class OtpService {
     private readonly channelsService: ChannelsService,
     private readonly config: ConfigService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis | null,
-    @InjectQueue('sms-status') private readonly smsQueue: Queue,
+    // @InjectQueue('sms-status') private readonly smsQueue: Queue,
   ) {
     this.expiryMinutes = this.config.get<number>('otp.expiryMinutes') ?? 5;
     this.costPerOtp = this.config.get<number>('otp.costPerOtp') ?? 0.25;
@@ -103,18 +103,18 @@ export class OtpService {
 
       // 6. Add to BullMQ for status polling ONLY if the provider is NOT 2factor
       // 2factor is handled purely via incoming webhooks.
-      if (smsResult.provider !== '2factor') {
-        await this.smsQueue.add(
-          'check-status',
-          { messageId: message.id },
-          {
-            delay: 10000,
-            attempts: 15,
-            backoff: { type: 'exponential', delay: 30000 },
-            removeOnComplete: true,
-          },
-        );
-      }
+      // if (smsResult.provider !== '2factor') {
+      //   await this.smsQueue.add(
+      //     'check-status',
+      //     { messageId: message.id },
+      //     {
+      //       delay: 10000,
+      //       attempts: 15,
+      //       backoff: { type: 'exponential', delay: 30000 },
+      //       removeOnComplete: true,
+      //     },
+      //   );
+      // }
 
       return {
         otpRequestId: otpRequest.id,
@@ -229,7 +229,7 @@ export class OtpService {
       case 'failed':
         return MessageStatus.FAILED;
       default:
-        return MessageStatus.INITIATED;
+        return MessageStatus.SENT;
     }
   }
 }

@@ -34,8 +34,8 @@ export class OtpVariablesDto {
 export class SendOtpDto {
   @ApiProperty({ example: '+919876543210' })
   @IsString()
-  @Matches(/^\+[1-9]\d{6,14}$/, {
-    message: 'Phone number must be in E.164 format',
+  @Matches(/^\+91[6-9]\d{9}$/, {
+    message: 'Phone number must be a valid Indian mobile in +91 format',
   })
   phoneNumber: string;
 

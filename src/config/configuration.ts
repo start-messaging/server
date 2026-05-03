@@ -35,6 +35,7 @@ export default () => ({
     domain: process.env.MAILGUN_DOMAIN,
     fromName: process.env.MAILGUN_FROM_NAME ?? 'StartMessaging',
     fromEmail: process.env.MAILGUN_FROM_EMAIL,
+    replyToEmail: process.env.MAILGUN_REPLY_TO_EMAIL,
   },
   payments: {
     razorpay: {

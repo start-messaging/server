@@ -34,7 +34,10 @@ async function bootstrap() {
     }),
   );
 
-  app.useGlobalInterceptors(new TransformResponseInterceptor(), new LoggingInterceptor());
+  app.useGlobalInterceptors(
+    new TransformResponseInterceptor(),
+    new LoggingInterceptor(),
+  );
   app.useGlobalFilters(new AllExceptionsFilter());
 
   const swaggerConfig = new DocumentBuilder()
