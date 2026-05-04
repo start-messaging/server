@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { istDayStart } from '../common/utils/date.util.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Wallet } from './entities/wallet.entity.js';
@@ -7,6 +8,8 @@ import {
   WalletTransactionType,
 } from './entities/wallet-transaction.entity.js';
 import { ErrorCodes } from '../common/constants/error-codes.constant.js';
+import { User } from '../users/entities/user.entity.js';
+import { EmailService } from '../common/services/email.service.js';
 
 export class InsufficientBalanceError extends Error {
   code = ErrorCodes.INSUFFICIENT_BALANCE;
@@ -22,7 +25,10 @@ export class WalletService {
     private readonly walletRepository: Repository<Wallet>,
     @InjectRepository(WalletTransaction)
     private readonly transactionRepository: Repository<WalletTransaction>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
+    private readonly emailService: EmailService,
   ) {}
 
   async createWallet(userId: string): Promise<Wallet> {
@@ -102,7 +108,7 @@ export class WalletService {
         referenceId,
       );
     }
-    return this.dataSource.transaction(async (txManager) => {
+    const tx = await this.dataSource.transaction(async (txManager) => {
       return this.performDebit(
         txManager,
         userId,
@@ -112,6 +118,21 @@ export class WalletService {
         referenceId,
       );
     });
+    await this.sendLowBalanceAlertsIfNeeded(
+      userId,
+      tx.balanceBefore,
+      tx.balanceAfter,
+    );
+    return tx;
+  }
+
+  async notifyLowBalanceIfNeeded(userId: string): Promise<void> {
+    const wallet = await this.getWallet(userId);
+    await this.sendLowBalanceAlertsIfNeeded(
+      userId,
+      Number(wallet.balance),
+      Number(wallet.balance),
+    );
   }
 
   private async performCredit(
@@ -197,6 +218,43 @@ export class WalletService {
     return manager.save(tx);
   }
 
+  private async sendLowBalanceAlertsIfNeeded(
+    userId: string,
+    balanceBefore: number,
+    balanceAfter: number,
+  ): Promise<void> {
+    const threshold = this.getCrossedLowBalanceThreshold(
+      balanceBefore,
+      balanceAfter,
+    );
+    if (!threshold) return;
+
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user?.email) return;
+
+    const displayName = user.businessName || user.firstName || 'there';
+    await this.emailService.sendLowBalanceAlertEmail(
+      user.email,
+      displayName,
+      balanceAfter,
+      threshold,
+    );
+  }
+
+  private getCrossedLowBalanceThreshold(
+    before: number,
+    after: number,
+  ): number | null {
+    // Adjacent band crossing checks:
+    // >5 -> (<5 and >3): send <5 alert
+    // >3 -> (<3 and >1): send <3 alert
+    // >1 -> (<1): send <1 alert
+    if (before > 5 && after < 5 && after > 3) return 5;
+    if (before > 3 && after < 3 && after > 1) return 3;
+    if (before > 1 && after < 1) return 1;
+    return null;
+  }
+
   async getTransactionsAdmin(
     userId: string,
     page: number,
@@ -246,8 +304,7 @@ export class WalletService {
   }
 
   async getAdminAnalytics() {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const todayStart = istDayStart();
 
     const stats = await this.transactionRepository
       .createQueryBuilder('t')
@@ -267,17 +324,18 @@ export class WalletService {
   }
 
   async getRevenueTrends(days = 7) {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    startDate.setHours(0, 0, 0, 0);
+    const startDate = istDayStart(days);
 
     const result = await this.transactionRepository
       .createQueryBuilder('t')
-      .select("TO_CHAR(t.createdAt, 'YYYY-MM-DD')", 'date')
+      .select(
+        "TO_CHAR(t.createdAt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')",
+        'date',
+      )
       .addSelect('COALESCE(SUM(t.amount), 0)', 'revenue')
       .where('t.type = :type', { type: WalletTransactionType.DEBIT })
       .andWhere('t.createdAt >= :startDate', { startDate })
-      .groupBy("TO_CHAR(t.createdAt, 'YYYY-MM-DD')")
+      .groupBy("TO_CHAR(t.createdAt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')")
       .orderBy('date', 'ASC')
       .getRawMany();
 

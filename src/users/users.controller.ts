@@ -72,7 +72,7 @@ export class UsersController {
       dto.mobileNumber,
     );
 
-    // Send via Fast2SMS — OTP code embedded in message for provider to extract
+    // Send via configured SMS provider (2Factor active) — OTP embedded in message.
     const result = await this.smsProviderFactory.send({
       to: dto.mobileNumber,
       content: `Your StartMessaging verification code is ${otp}. Valid for 5 minutes.`,

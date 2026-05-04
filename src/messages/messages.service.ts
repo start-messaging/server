@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { istDayStart, parseISTDate } from '../common/utils/date.util.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
@@ -37,6 +38,11 @@ export class MessagesService {
     const message = await this.messageRepository.findOneOrFail({
       where: { id: messageId },
     });
+
+    // 2Factor delivery is webhook-driven; polling adds no value.
+    if (message.provider === '2factor') {
+      return this.pickCustomerFields(message);
+    }
 
     if (!message.providerMsgId) return message;
 
@@ -77,15 +83,13 @@ export class MessagesService {
     newStatus: MessageStatus,
     extraFields?: Partial<Message>,
   ): Promise<Message> {
-    // Reset cost for failed/expired messages to reflect actual spend
-    if (
-      newStatus === MessageStatus.FAILED ||
-      newStatus === MessageStatus.EXPIRED
-    ) {
+    // Reset cost for failed messages to reflect actual spend
+    if (newStatus === MessageStatus.FAILED) {
       extraFields = { ...extraFields, costAmount: 0 };
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    let debited = false;
+    const updated = await this.dataSource.transaction(async (manager) => {
       // Deferred Debit: only debit on first transition to DELIVERED
       if (
         newStatus === MessageStatus.DELIVERED &&
@@ -105,6 +109,7 @@ export class MessagesService {
             message.id,
             manager,
           );
+          debited = true;
           // Set costAmount now so it shows in dashboard
           extraFields = { ...extraFields, costAmount: debitAmount };
         }
@@ -112,6 +117,10 @@ export class MessagesService {
 
       return this.updateStatus(message.id, newStatus, extraFields, manager);
     });
+    if (debited) {
+      await this.walletService.notifyLowBalanceIfNeeded(message.userId);
+    }
+    return updated;
   }
 
   async updateStatus(
@@ -219,16 +228,17 @@ export class MessagesService {
       throw new NotFoundException('Message not found');
     }
 
-    const terminalStatuses = [
-      MessageStatus.DELIVERED,
-      MessageStatus.FAILED,
-      MessageStatus.EXPIRED,
-    ];
+    const terminalStatuses = [MessageStatus.DELIVERED, MessageStatus.FAILED];
     if (terminalStatuses.includes(message.status)) {
       return this.pickCustomerFields(message);
     }
 
     if (!message.providerMsgId) {
+      return this.pickCustomerFields(message);
+    }
+
+    // 2Factor status progression is webhook-based; avoid redundant provider polling.
+    if (message.provider === '2factor') {
       return this.pickCustomerFields(message);
     }
 
@@ -265,6 +275,16 @@ export class MessagesService {
     const picked = {} as Message;
     for (const field of this.customerFields) {
       (picked as any)[field] = message[field];
+    }
+    // Keep client flow simple: SENT -> DELIVERED/FAILED.
+    if (
+      picked.status === MessageStatus.INITIATED ||
+      picked.status === MessageStatus.QUEUED
+    ) {
+      picked.status = MessageStatus.SENT;
+    }
+    if (picked.status === MessageStatus.EXPIRED) {
+      picked.status = MessageStatus.FAILED;
     }
     return picked;
   }
@@ -330,10 +350,6 @@ export class MessagesService {
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
         'failed',
       )
-      .addSelect(
-        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.EXPIRED}')`,
-        'expired',
-      )
       .where('m.userId = :userId', { userId })
       .getRawOne();
 
@@ -345,7 +361,6 @@ export class MessagesService {
         sent: parseInt(result.sent, 10),
         delivered: parseInt(result.delivered, 10),
         failed: parseInt(result.failed, 10),
-        expired: parseInt(result.expired, 10),
       },
     };
   }
@@ -367,18 +382,21 @@ export class MessagesService {
   }
 
   async getAdminDashboardStats() {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const todayStart = istDayStart();
 
     const stats = await this.messageRepository
       .createQueryBuilder('m')
       .select('COUNT(*)', 'total')
       .addSelect(
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`,
+        'totalDelivered',
+      )
+      .addSelect(
+        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}' AND m.createdAt >= :todayStart)`,
         'delivered',
       )
       .addSelect(
-        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
+        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}' AND m.createdAt >= :todayStart)`,
         'failed',
       )
       .addSelect(
@@ -393,18 +411,23 @@ export class MessagesService {
       delivered: parseInt(stats.delivered, 10),
       failed: parseInt(stats.failed, 10),
       todayCount: parseInt(stats.todayCount, 10),
-      successRate: stats.total > 0 ? (stats.delivered / stats.total) * 100 : 0,
+      successRate:
+        stats.total > 0
+          ? (parseInt(stats.totalDelivered, 10) / parseInt(stats.total, 10)) *
+            100
+          : 0,
     };
   }
 
   async getAdminTrends(days = 7) {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    startDate.setHours(0, 0, 0, 0);
+    const startDate = istDayStart(days);
 
     const result = await this.messageRepository
       .createQueryBuilder('m')
-      .select("TO_CHAR(m.createdAt, 'YYYY-MM-DD')", 'date')
+      .select(
+        "TO_CHAR(m.createdAt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')",
+        'date',
+      )
       .addSelect('COUNT(*)', 'total')
       .addSelect(
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`,
@@ -415,7 +438,7 @@ export class MessagesService {
         'failed',
       )
       .where('m.createdAt >= :startDate', { startDate })
-      .groupBy("TO_CHAR(m.createdAt, 'YYYY-MM-DD')")
+      .groupBy("TO_CHAR(m.createdAt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')")
       .orderBy('date', 'ASC')
       .getRawMany();
 
@@ -432,8 +455,7 @@ export class MessagesService {
     startDate?: string,
     endDate?: string,
   ) {
-    const rangeStart = startDate ? new Date(startDate) : new Date();
-    if (!startDate) rangeStart.setHours(0, 0, 0, 0);
+    const rangeStart = startDate ? new Date(startDate) : istDayStart();
 
     const rangeEnd = endDate ? new Date(endDate) : undefined;
 
@@ -486,13 +508,14 @@ export class MessagesService {
   }
 
   async getDashboardTrends(userId: string, days = 7) {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    startDate.setHours(0, 0, 0, 0);
+    const startDate = istDayStart(days);
 
     const result = await this.messageRepository
       .createQueryBuilder('m')
-      .select("TO_CHAR(m.createdAt, 'YYYY-MM-DD')", 'date')
+      .select(
+        "TO_CHAR(m.createdAt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')",
+        'date',
+      )
       .addSelect('COUNT(*)', 'total')
       .addSelect(
         `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`,
@@ -504,7 +527,7 @@ export class MessagesService {
       )
       .where('m.userId = :userId', { userId })
       .andWhere('m.createdAt >= :startDate', { startDate })
-      .groupBy("TO_CHAR(m.createdAt, 'YYYY-MM-DD')")
+      .groupBy("TO_CHAR(m.createdAt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')")
       .orderBy('date', 'ASC')
       .getRawMany();
 
@@ -517,10 +540,8 @@ export class MessagesService {
   }
 
   async getAdminDailyUsage(dateString?: string) {
-    const startDate = dateString ? new Date(dateString) : new Date();
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 1);
+    const startDate = dateString ? parseISTDate(dateString) : istDayStart();
+    const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
 
     const result = await this.messageRepository
       .createQueryBuilder('m')

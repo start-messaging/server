@@ -8,7 +8,6 @@ import { DashboardController } from './dashboard.controller.js';
 import { ApiKeysModule } from '../api-keys/api-keys.module.js';
 import { SmsProvidersModule } from '../sms-providers/sms-providers.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
-import { SmsStatusProcessor } from './queues/sms-status.processor.js';
 import { SmsWebhookProcessor } from './queues/sms-webhook.processor.js';
 
 @Module({
@@ -18,11 +17,11 @@ import { SmsWebhookProcessor } from './queues/sms-webhook.processor.js';
     SmsProvidersModule,
     WalletModule,
     BullModule.registerQueue({
-      name: 'sms-status',
+      name: 'sms-webhook',
     }),
   ],
   controllers: [MessagesController, DashboardController],
-  providers: [MessagesService, SmsStatusProcessor, SmsWebhookProcessor],
+  providers: [MessagesService, SmsWebhookProcessor],
   exports: [MessagesService, BullModule],
 })
 export class MessagesModule {}

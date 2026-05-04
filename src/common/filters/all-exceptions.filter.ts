@@ -68,7 +68,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         code = resp.code || this.httpStatusToErrorCode(status);
         if (Array.isArray(resp.message)) {
             details = resp.message.map((m: string) => ({ message: m }));
-            message = 'Validation failed';
+            message = resp.message[0] || 'Validation failed';
             code = ErrorCodes.VALIDATION_ERROR;
         }
     }

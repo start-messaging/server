@@ -52,8 +52,9 @@ export class TwoFactorWebhookController {
 
     await this.webhookQueue.add('two-factor-update', normalized, {
       attempts: 3,
-      backoff: { type: 'exponential', delay: 5000 },
+      backoff: { type: 'exponential', delay: 3000 },
       removeOnComplete: true,
+      removeOnFail: true,
     });
 
     return { received: true };

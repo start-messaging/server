@@ -38,7 +38,9 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
         const redisUrl = config.get<string>('redis.url');
         return {
           throttlers: [{ name: 'default', ttl: 60000, limit: 1200 }], // Global broad limit (burstable)
-          storage: redisUrl ? new ThrottlerStorageRedisService(redisUrl) : undefined,
+          storage: redisUrl
+            ? new ThrottlerStorageRedisService(redisUrl)
+            : undefined,
         };
       },
     }),
@@ -48,7 +50,7 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
       useFactory: (config: ConfigService) => {
         const redisUrl = config.get<string>('redis.url');
         if (!redisUrl) throw new Error('REDIS_URL is required for BullMQ');
-        
+
         // Parsing redis url: redis://[:password@]host[:port][/db]
         const url = new URL(redisUrl);
         return {

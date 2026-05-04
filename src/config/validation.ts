@@ -54,6 +54,7 @@ export const envValidationSchema = Joi.object({
   MAILGUN_DOMAIN: Joi.string().optional(),
   MAILGUN_FROM_NAME: Joi.string().default('StartMessaging'),
   MAILGUN_FROM_EMAIL: Joi.string().optional(),
+  MAILGUN_REPLY_TO_EMAIL: Joi.string().email().optional(),
   
   // Custom testing
   MOCK_SMS_SEND: Joi.boolean().default(false),

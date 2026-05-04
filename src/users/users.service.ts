@@ -481,8 +481,8 @@ export class UsersService {
           message:
             'Your documents are under review. Contact support for faster approval.',
           whatsapp: {
-            number: '919034036898',
-            url: 'https://wa.me/919034036898?text=Hi%2C%20I%20submitted%20my%20KYC%20for%20StartMessaging.%20Please%20review%20my%20documents.',
+            number: '916376383348',
+            url: 'https://wa.me/916376383348?text=Hi%2C%20I%20submitted%20my%20KYC%20for%20StartMessaging.%20Please%20review%20my%20documents.',
           },
         },
       },
