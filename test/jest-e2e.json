@@ -3,7 +3,25 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
+  "maxWorkers": 1,
+  "testTimeout": 30000,
+  "globalSetup": "<rootDir>/helpers/global-setup.ts",
+  "setupFiles": ["<rootDir>/helpers/set-test-env.ts"],
+  "moduleNameMapper": {
+    "^(\\.{1,2}/.*)\\.js$": "$1"
+  },
+  "transformIgnorePatterns": ["/node_modules/(?!(uuid)/)"],
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "^.+\\.(t|j)s$": [
+      "ts-jest",
+      {
+        "tsconfig": {
+          "module": "commonjs",
+          "moduleResolution": "node",
+          "resolvePackageJsonExports": false,
+          "verbatimModuleSyntax": false
+        }
+      }
+    ]
   }
 }

@@ -6,6 +6,8 @@ export default () => ({
     name: process.env.DATABASE_NAME,
     username: process.env.DATABASE_USERNAME,
     password: process.env.DATABASE_PASSWORD,
+    // Auto-build schema on boot — used ONLY by the e2e suite (never in prod).
+    synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
   },
   redis: {
     url: process.env.REDIS_URL,

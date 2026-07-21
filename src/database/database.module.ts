@@ -14,7 +14,8 @@ import { ConfigService } from '@nestjs/config';
         username: config.get<string>('database.username'),
         password: config.get<string>('database.password'),
         autoLoadEntities: true,
-        synchronize: false,
+        // false in prod (migration-driven); the e2e suite sets it true.
+        synchronize: config.get<boolean>('database.synchronize') ?? false,
         migrationsRun: false,
         logging:
           process.env.NODE_ENV === 'production' ? false : ['error', 'warn'], // Reduced noise (no more "query: SELECT...")
