@@ -13,6 +13,7 @@ import {
   SignatureVerificationParams,
   WebhookVerificationResult,
 } from './payment-gateway.interface.js';
+import { microsToPaise, paiseToMicros } from '../fee.util.js';
 
 @Injectable()
 export class RazorpayGateway implements PaymentGateway {
@@ -40,9 +41,10 @@ export class RazorpayGateway implements PaymentGateway {
       throw new InternalServerErrorException('Razorpay not configured');
 
     const order = await this.client.orders.create({
-      amount: Math.round(params.amount * 100),
+      amount: microsToPaise(params.amount),
       currency: params.currency,
       receipt: params.idempotencyKey,
+      notes: params.notes,
     });
 
     return {
@@ -94,7 +96,7 @@ export class RazorpayGateway implements PaymentGateway {
         valid: true,
         gatewayOrderId: payment.order_id,
         gatewayPaymentId: payment.id,
-        amount: payment.amount / 100,
+        amount: paiseToMicros(payment.amount),
         status: 'completed',
       };
     }
@@ -104,7 +106,7 @@ export class RazorpayGateway implements PaymentGateway {
         valid: true,
         gatewayOrderId: payment.order_id,
         gatewayPaymentId: payment.id,
-        amount: payment.amount / 100,
+        amount: paiseToMicros(payment.amount),
         status: 'failed',
       };
     }

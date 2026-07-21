@@ -23,7 +23,8 @@ import Redis from 'ioredis';
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
   private readonly expiryMinutes: number;
-  private readonly costPerOtp: number;
+  /** Per-OTP cost in integer micros (config is in the major unit / rupees). */
+  private readonly costPerOtpMicros: number;
 
   constructor(
     @InjectRepository(OtpRequest)
@@ -37,7 +38,9 @@ export class OtpService {
     // @InjectQueue('sms-status') private readonly smsQueue: Queue,
   ) {
     this.expiryMinutes = this.config.get<number>('otp.expiryMinutes') ?? 5;
-    this.costPerOtp = this.config.get<number>('otp.costPerOtp') ?? 0.25;
+    this.costPerOtpMicros = Math.round(
+      (this.config.get<number>('otp.costPerOtp') ?? 0.25) * 1_000_000,
+    );
   }
 
   async send(userId: string, dto: SendOtpDto, apiKeyId?: string) {
@@ -46,7 +49,7 @@ export class OtpService {
 
     // 2. Reserve Check (Pre-check balance)
     const wallet = await this.walletService.getWallet(userId);
-    if (Number(wallet.balance) < this.costPerOtp) {
+    if (Number(wallet.balance) < this.costPerOtpMicros) {
       throw new BadRequestException({
         code: ErrorCodes.INSUFFICIENT_BALANCE,
         message: 'Insufficient balance',
@@ -93,7 +96,7 @@ export class OtpService {
         providerMsgId: smsResult.providerMsgId || null,
         status: this.mapResultStatus(smsResult.status),
         costAmount: 0,
-        metadata: { intendedCost: this.costPerOtp },
+        metadata: { intendedCost: this.costPerOtpMicros },
         senderId:
           smsResult.provider === 'fast2sms'
             ? this.config.get<string>('sms.fast2sms.senderId')
@@ -141,7 +144,7 @@ export class OtpService {
           providerMsgId: smsResult?.providerMsgId || null,
           status: MessageStatus.FAILED,
           costAmount: 0,
-          metadata: { intendedCost: this.costPerOtp },
+          metadata: { intendedCost: this.costPerOtpMicros },
           failureReason: err.message,
           sentAt: null,
           apiKeyId,

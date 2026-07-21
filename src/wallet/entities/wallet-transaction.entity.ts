@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Wallet } from './wallet.entity.js';
+import { bigintTransformer } from '../../common/database/bigint.transformer.js';
 
 export enum WalletTransactionType {
   CREDIT = 'credit',
@@ -35,13 +36,14 @@ export class WalletTransaction {
   @Column({ type: 'enum', enum: WalletTransactionType })
   type: WalletTransactionType;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  /** Positive magnitude in integer micros; direction comes from `type`. */
+  @Column({ type: 'bigint', transformer: bigintTransformer })
   amount: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  @Column({ type: 'bigint', transformer: bigintTransformer })
   balanceBefore: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  @Column({ type: 'bigint', transformer: bigintTransformer })
   balanceAfter: number;
 
   @Column({ type: 'varchar', nullable: true })

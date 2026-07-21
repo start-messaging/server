@@ -1,6 +1,7 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
 import { User } from '../../users/entities/user.entity.js';
+import { bigintTransformer } from '../../common/database/bigint.transformer.js';
 
 export enum MessageStatus {
   INITIATED = 'initiated',
@@ -41,13 +42,18 @@ export class Message extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   providerMsgId: string | null;
 
-  @Column({ type: 'enum', enum: MessageStatus, default: MessageStatus.INITIATED })
+  @Column({
+    type: 'enum',
+    enum: MessageStatus,
+    default: MessageStatus.INITIATED,
+  })
   status: MessageStatus;
 
   @Column({ type: 'jsonb', default: [] })
   statusHistory: { status: string; timestamp: string }[];
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  /** Amount charged to the customer for this message, in integer micros. */
+  @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
   costAmount: number;
 
   @Column({ type: 'varchar', nullable: true })
@@ -62,7 +68,8 @@ export class Message extends BaseEntity {
   @Column({ type: 'integer', default: 0 })
   smsCount: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  /** What the SMS vendor charged us, in integer micros. */
+  @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
   providerCost: number;
 
   @Column({ type: 'varchar', nullable: true })

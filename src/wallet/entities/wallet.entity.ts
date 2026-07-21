@@ -1,6 +1,7 @@
 import { Column, Entity, JoinColumn, OneToOne, VersionColumn } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
 import { User } from '../../users/entities/user.entity.js';
+import { bigintTransformer } from '../../common/database/bigint.transformer.js';
 
 @Entity('wallets')
 export class Wallet extends BaseEntity {
@@ -11,7 +12,8 @@ export class Wallet extends BaseEntity {
   @JoinColumn({ name: 'userId' })
   user: User;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  /** Available balance in integer micros (1 unit = 1,000,000 micros). */
+  @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
   balance: number;
 
   @Column({ default: 'INR' })

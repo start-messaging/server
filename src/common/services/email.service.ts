@@ -139,9 +139,12 @@ export class EmailService {
   async sendLowBalanceAlertEmail(
     email: string,
     displayName: string,
-    balance: number,
-    threshold: number,
+    balanceMicros: number,
+    thresholdMicros: number,
   ) {
+    // Balances/thresholds are stored in micros; format as major-unit rupees.
+    const balance = balanceMicros / 1_000_000;
+    const threshold = thresholdMicros / 1_000_000;
     const subject = `Low wallet balance alert (below ₹${threshold})`;
     const html = this.wrapEmail({
       title: `Hi ${displayName}, your wallet balance is low`,
