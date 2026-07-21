@@ -56,8 +56,9 @@ export class OtpService {
       });
     }
 
-    // 3. Render Template
+    // 3. Render Template (scoped to the caller — own or system templates only)
     const { body: smsContent, identifiers } = await this.renderOtpMessage(
+      userId,
       dto.templateId,
       dto.variables as Record<string, string>,
     );
@@ -163,6 +164,7 @@ export class OtpService {
   }
 
   private async renderOtpMessage(
+    userId: string,
     templateId?: string,
     variables?: Record<string, string>,
   ): Promise<{ body: string; identifiers: Record<string, string> }> {
@@ -170,7 +172,10 @@ export class OtpService {
     let identifiers: Record<string, string> = {};
 
     if (templateId) {
-      const template = await this.channelsService.findTemplateById(templateId);
+      const template = await this.channelsService.findUsableTemplate(
+        userId,
+        templateId,
+      );
       if (template) {
         body = template.body;
         identifiers = (template.metadata as Record<string, string>) || {};

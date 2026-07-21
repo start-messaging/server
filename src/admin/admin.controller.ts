@@ -35,6 +35,8 @@ import { AdminMessageQueryDto } from './dto/admin-message-query.dto.js';
 import { CreateTemplateDto } from './dto/create-template.dto.js';
 import { UpdateTemplateDto } from './dto/update-template.dto.js';
 import { TemplateFilterQueryDto } from './dto/template-filter-query.dto.js';
+import { ApproveTemplateDto } from './dto/approve-template.dto.js';
+import { RejectTemplateDto } from './dto/reject-template.dto.js';
 import { KycStatus } from '../users/enums/kyc-status.enum.js';
 
 @ApiTags('Admin')
@@ -322,36 +324,48 @@ export class AdminController {
   }
 
   @Post('templates')
-  @ApiOperation({ summary: 'Create a custom OTP template' })
+  @ApiOperation({ summary: 'Create a shared SYSTEM OTP template (approved)' })
   async createTemplate(@Body() dto: CreateTemplateDto) {
-    return this.channelsService.createTemplate(dto);
+    return this.channelsService.createSystemTemplate(dto);
   }
 
-  @Patch('templates/:id/publish')
-  @ApiOperation({ summary: 'Publish a draft template' })
-  async publishTemplate(@Param('id') id: string) {
-    return this.channelsService.publishTemplate(id);
+  @Patch('templates/:id/approve')
+  @ApiOperation({ summary: 'Approve a template (optionally set provider ids)' })
+  async approveTemplate(
+    @CurrentUser('id') adminId: string,
+    @Param('id') id: string,
+    @Body() dto: ApproveTemplateDto,
+  ) {
+    return this.channelsService.approveTemplate(id, adminId, dto.metadata);
   }
 
-  @Patch('templates/:id/unpublish')
-  @ApiOperation({ summary: 'Unpublish a template back to draft' })
-  async unpublishTemplate(@Param('id') id: string) {
-    return this.channelsService.unpublishTemplate(id);
+  @Patch('templates/:id/reject')
+  @ApiOperation({ summary: 'Reject a template with a reason' })
+  async rejectTemplate(
+    @CurrentUser('id') adminId: string,
+    @Param('id') id: string,
+    @Body() dto: RejectTemplateDto,
+  ) {
+    return this.channelsService.rejectTemplate(
+      id,
+      adminId,
+      dto.rejectionReason,
+    );
   }
 
   @Patch('templates/:id')
-  @ApiOperation({ summary: 'Update an OTP template' })
+  @ApiOperation({ summary: 'Update a template (name/body/language/metadata)' })
   async updateTemplate(
     @Param('id') id: string,
     @Body() dto: UpdateTemplateDto,
   ) {
-    return this.channelsService.updateTemplate(id, dto);
+    return this.channelsService.updateTemplateAdmin(id, dto);
   }
 
   @Delete('templates/:id')
-  @ApiOperation({ summary: 'Soft-delete a custom OTP template' })
+  @ApiOperation({ summary: 'Soft-delete a template' })
   async deleteTemplate(@Param('id') id: string) {
-    await this.channelsService.deleteTemplate(id);
+    await this.channelsService.deleteTemplateAdmin(id);
     return { deleted: true };
   }
 }

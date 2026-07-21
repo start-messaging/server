@@ -17,14 +17,8 @@ export class ChannelsController {
   }
 
   @Get('channels/:id/templates')
-  @ApiOperation({ summary: 'List templates for a channel' })
+  @ApiOperation({ summary: 'List approved system templates for a channel' })
   findTemplatesByChannel(@Param('id') id: string) {
-    return this.channelsService.findTemplatesByChannel(id);
-  }
-
-  @Get('templates')
-  @ApiOperation({ summary: 'List all active OTP templates' })
-  findAllTemplates() {
-    return this.channelsService.findAllActiveTemplates();
+    return this.channelsService.findSystemTemplatesByChannel(id);
   }
 }
