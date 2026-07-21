@@ -19,6 +19,8 @@ export default () => ({
     refreshExpiration: process.env.JWT_REFRESH_EXPIRATION ?? '7d',
   },
   sms: {
+    // 'console' (dev/test, logs the OTP) or 'twofactor' (real gateway).
+    driver: process.env.SMS_DRIVER ?? 'console',
     fast2sms: {
       apiKey: process.env.FAST2SMS_API_KEY,
       route: process.env.FAST2SMS_ROUTE ?? 'dlt',
@@ -29,6 +31,10 @@ export default () => ({
       apiKey: process.env.TWOFACTOR_API_KEY,
       templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP',
     },
+  },
+  mail: {
+    // 'console' (dev/test, logs the email) or 'mailgun' (real transport).
+    driver: process.env.MAIL_DRIVER ?? 'console',
   },
   mailgun: {
     apiKey: process.env.MAILGUN_API_KEY,
@@ -42,6 +48,31 @@ export default () => ({
       keyId: process.env.RAZORPAY_KEY_ID,
       keySecret: process.env.RAZORPAY_KEY_SECRET,
       webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
+    },
+    // Customer-fee-bearer model: the user pays Razorpay's platform fee + GST on
+    // top of their top-up; only the base amount is credited to the wallet.
+    fee: {
+      // Platform fee percentage of the base top-up (Razorpay standard MDR ~2%).
+      percent: parseFloat(process.env.RAZORPAY_FEE_PERCENT ?? '2'),
+      // GST percentage charged on the platform fee (18% in India).
+      gstPercent: parseFloat(process.env.RAZORPAY_GST_PERCENT ?? '18'),
+      // 'customer' = user bears the fee (default); 'platform' = we absorb it.
+      bearer: process.env.PAYMENT_FEE_BEARER ?? 'customer',
+    },
+  },
+  affiliate: {
+    // Percentage of a referred user's base top-up paid to the partner.
+    commissionPercent: parseFloat(
+      process.env.AFFILIATE_COMMISSION_PERCENT ?? '10',
+    ),
+    // A partner needs at least this many PAID referred users to withdraw.
+    minPaidUsers: parseInt(process.env.AFFILIATE_MIN_PAID_USERS ?? '10', 10),
+    // Minimum withdrawable earnings balance, in the major unit (rupees).
+    minWithdrawal: parseFloat(process.env.AFFILIATE_MIN_WITHDRAWAL ?? '1000'),
+    // Payouts may only be requested/processed within this day-of-month window.
+    payoutWindow: {
+      startDay: parseInt(process.env.AFFILIATE_PAYOUT_START_DAY ?? '21', 10),
+      endDay: parseInt(process.env.AFFILIATE_PAYOUT_END_DAY ?? '28', 10),
     },
   },
   google: {
