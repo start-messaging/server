@@ -6,9 +6,10 @@ import { PaymentsController } from './payments.controller.js';
 import { PaymentGatewayFactory } from './gateways/payment-gateway.factory.js';
 import { RazorpayGateway } from './gateways/razorpay.gateway.js';
 import { WalletModule } from '../wallet/wallet.module.js';
+import { ReferralModule } from '../referral/referral.module.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Payment]), WalletModule],
+  imports: [TypeOrmModule.forFeature([Payment]), WalletModule, ReferralModule],
   controllers: [PaymentsController],
   providers: [PaymentsService, PaymentGatewayFactory, RazorpayGateway],
   exports: [PaymentsService],

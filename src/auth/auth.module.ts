@@ -7,11 +7,13 @@ import { AuthController } from './auth.controller.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { UsersModule } from '../users/users.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
+import { ReferralModule } from '../referral/referral.module.js';
 
 @Module({
   imports: [
     UsersModule,
     WalletModule,
+    ReferralModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],

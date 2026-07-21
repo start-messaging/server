@@ -56,4 +56,12 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   country?: string;
+
+  @ApiPropertyOptional({
+    description: 'Affiliate referral code, if the user was referred',
+    example: 'AB2C3D4E',
+  })
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
 }

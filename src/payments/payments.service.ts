@@ -18,6 +18,7 @@ import { WalletService } from '../wallet/wallet.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { VerifyPaymentDto } from './dto/verify-payment.dto.js';
 import { computeConvenienceFee, microsToPaise } from './fee.util.js';
+import { ReferralService } from '../referral/referral.service.js';
 
 @Injectable()
 export class PaymentsService {
@@ -30,6 +31,7 @@ export class PaymentsService {
     private readonly walletService: WalletService,
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
+    private readonly referralService: ReferralService,
   ) {}
 
   async createOrder(userId: string, dto: CreateOrderDto) {
@@ -172,6 +174,14 @@ export class PaymentsService {
         manager,
       );
 
+      // Accrue affiliate commission for the referring partner (idempotent).
+      await this.referralService.recordCommissionForPayment(
+        manager,
+        payment.userId,
+        payment.id,
+        Number(payment.amount),
+      );
+
       return {
         status: 'completed',
         message: 'Payment verified and wallet credited',
@@ -226,6 +236,14 @@ export class PaymentsService {
           'payment',
           payment.id,
           manager,
+        );
+
+        // Accrue affiliate commission for the referring partner (idempotent).
+        await this.referralService.recordCommissionForPayment(
+          manager,
+          payment.userId,
+          payment.id,
+          Number(payment.amount),
         );
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
