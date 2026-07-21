@@ -13,9 +13,11 @@ export function unwrap<T>(body: unknown): T {
   return (body as { data: T }).data;
 }
 
-export function pagination(
-  body: unknown,
-): { totalItems: number; page: number; totalPages: number } {
+export function pagination(body: unknown): {
+  totalItems: number;
+  page: number;
+  totalPages: number;
+} {
   return (body as { pagination: any }).pagination;
 }
 

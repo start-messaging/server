@@ -22,7 +22,12 @@ describe('POST /auth/register', () => {
     const email = uniqueEmail('signup');
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ email, password: DEFAULT_PASSWORD, firstName: 'A', lastName: 'B' })
+      .send({
+        email,
+        password: DEFAULT_PASSWORD,
+        firstName: 'A',
+        lastName: 'B',
+      })
       .expect(201);
 
     const data = unwrap<{

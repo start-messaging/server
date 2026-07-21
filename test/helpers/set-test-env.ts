@@ -28,6 +28,10 @@ process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379/15';
 process.env.JWT_SECRET =
   process.env.JWT_SECRET ?? 'test-jwt-secret-not-for-production-use';
 
+// Long-lived access tokens so specs that freeze the clock (payout window tests)
+// don't accidentally expire the token.
+process.env.JWT_EXPIRATION = '90d';
+
 // Console transports — never hit a real gateway during tests.
 process.env.SMS_DRIVER = 'console';
 process.env.MAIL_DRIVER = 'console';

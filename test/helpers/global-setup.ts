@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+// `pg` ships no types (no @types/pg in this project), so `Client` resolves to
+// `any` — the raw SQL calls below are intentional test-infra plumbing.
 import './set-test-env';
 import { Client } from 'pg';
 
