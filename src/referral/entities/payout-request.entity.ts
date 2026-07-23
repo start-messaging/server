@@ -1,6 +1,6 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
-import { User } from '../../users/entities/user.entity.js';
+import { ReferralPartner } from './referral-partner.entity.js';
 import { bigintTransformer } from '../../common/database/bigint.transformer.js';
 
 export enum PayoutStatus {
@@ -18,15 +18,15 @@ export enum PayoutStatus {
  * earnings balance atomically (a `withdrawal` ledger row) so it can't be
  * double-withdrawn; a rejection returns it (a `reversal` row).
  */
-@Index('IDX_payout_requests_partner_status', ['partnerUserId', 'status'])
+@Index('IDX_payout_requests_partner_status', ['partnerId', 'status'])
 @Entity('payout_requests')
 export class PayoutRequest extends BaseEntity {
   @Column({ type: 'uuid' })
-  partnerUserId: string;
+  partnerId: string;
 
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'partnerUserId' })
-  partner?: User;
+  @ManyToOne(() => ReferralPartner)
+  @JoinColumn({ name: 'partnerId' })
+  partner?: ReferralPartner;
 
   /** Amount requested, in integer micros. */
   @Column({ type: 'bigint', transformer: bigintTransformer })

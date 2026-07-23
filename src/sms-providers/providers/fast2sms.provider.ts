@@ -98,7 +98,7 @@ export class Fast2SmsProvider implements SmsProvider {
         headers: { authorization: this.apiKey },
       });
 
-      const data = (await response.json()) as any;
+      const data = await response.json();
 
       if (!data.return || !data.data || !data.data[0]) {
         return { status: 'unknown', rawResponse: data };
@@ -109,17 +109,20 @@ export class Fast2SmsProvider implements SmsProvider {
         return { status: 'unknown', rawResponse: data };
       }
 
-      const statusMap: Record<string, 'delivered' | 'failed' | 'sent' | 'unknown'> = {
-        'delivered': 'delivered',
-        'failed': 'failed',
-        'rejected': 'failed',
-        'sent': 'sent',
-        'submitted': 'sent',
+      const statusMap: Record<
+        string,
+        'delivered' | 'failed' | 'sent' | 'unknown'
+      > = {
+        delivered: 'delivered',
+        failed: 'failed',
+        rejected: 'failed',
+        sent: 'sent',
+        submitted: 'sent',
       };
 
       const normalizedStatus = (dlr.status || '').toLowerCase();
       let status: 'delivered' | 'failed' | 'sent' | 'unknown' = 'unknown';
-      
+
       for (const [key, val] of Object.entries(statusMap)) {
         if (normalizedStatus.includes(key)) {
           status = val;
@@ -134,8 +137,12 @@ export class Fast2SmsProvider implements SmsProvider {
         smsLanguage: dlr.sms_language,
         characterCount: dlr.character_count,
         smsCount: dlr.sms_count,
-        providerCost: dlr.amount_debited ? parseFloat(dlr.amount_debited) : undefined,
-        deliveredAt: dlr.delivery_timestamp ? new Date(dlr.delivery_timestamp * 1000) : undefined,
+        providerCost: dlr.amount_debited
+          ? parseFloat(dlr.amount_debited)
+          : undefined,
+        deliveredAt: dlr.delivery_timestamp
+          ? new Date(dlr.delivery_timestamp * 1000)
+          : undefined,
         rawResponse: data,
       };
     } catch (err: any) {
@@ -177,7 +184,8 @@ export class Fast2SmsProvider implements SmsProvider {
         return {
           route: 'dlt',
           sender_id: this.senderId ?? '',
-          message: templateIdentifiers?.['fast2sms'] || (this.dltTemplateId ?? ''),
+          message:
+            templateIdentifiers?.['fast2sms'] || (this.dltTemplateId ?? ''),
           variables_values: this.extractOtp(content),
           numbers: number,
         };

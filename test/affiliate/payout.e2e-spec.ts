@@ -4,9 +4,15 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import request from 'supertest';
 import { createTestApp } from '../helpers/create-test-app';
 import { unwrap, errorCode } from '../helpers/envelope';
-import { registerUser, createAdmin, bearer } from '../helpers/auth';
+import {
+  registerUser,
+  registerPartner,
+  createAdmin,
+  bearer,
+  RegisteredPartner,
+} from '../helpers/auth';
 import { freezeDate, isoForDayOfMonth } from '../helpers/clock';
-import { ReferralProfile } from '../../src/referral/entities/referral-profile.entity';
+import { ReferralPartner } from '../../src/referral/entities/referral-partner.entity';
 import { PayoutStatus } from '../../src/referral/entities/payout-request.entity';
 
 // Default window is days 21–28; min 10 paid users; min ₹1000 balance.
@@ -16,12 +22,12 @@ const OUTSIDE_WINDOW = isoForDayOfMonth(10);
 
 describe('Affiliate — payout window + thresholds', () => {
   let app: INestApplication;
-  let profiles: Repository<ReferralProfile>;
+  let partners: Repository<ReferralPartner>;
 
   beforeAll(async () => {
     ({ app } = await createTestApp());
-    profiles = app.get<Repository<ReferralProfile>>(
-      getRepositoryToken(ReferralProfile),
+    partners = app.get<Repository<ReferralPartner>>(
+      getRepositoryToken(ReferralPartner),
     );
   });
 
@@ -29,27 +35,21 @@ describe('Affiliate — payout window + thresholds', () => {
     await app.close();
   });
 
-  async function joinedPartner(prefix: string) {
-    const user = await registerUser(app, prefix);
-    await request(app.getHttpServer())
-      .post('/partner/join')
-      .set('Authorization', bearer(user.accessToken))
-      .send({ payoutDetails: { upiId: 'p@upi' } })
-      .expect(201);
-    return user;
-  }
-
-  async function seedProfile(
-    userId: string,
+  /** Seed the cached balance + paid-users count directly on the partner row. */
+  async function seed(
+    partner: RegisteredPartner,
     paidUsersCount: number,
     earningsBalance: number,
   ) {
-    await profiles.update({ userId }, { paidUsersCount, earningsBalance });
+    await partners.update(
+      { id: partner.id },
+      { paidUsersCount, earningsBalance },
+    );
   }
 
   it('blocks payout outside the 21–28 window', async () => {
-    const partner = await joinedPartner('pw');
-    await seedProfile(partner.id, 12, 2_000_000_000);
+    const partner = await registerPartner(app, 'pw');
+    await seed(partner, 12, 2_000_000_000);
     const restore = freezeDate(OUTSIDE_WINDOW);
     try {
       const res = await request(app.getHttpServer())
@@ -64,8 +64,8 @@ describe('Affiliate — payout window + thresholds', () => {
   });
 
   it('blocks payout below the paid-users threshold', async () => {
-    const partner = await joinedPartner('pt');
-    await seedProfile(partner.id, 3, 2_000_000_000);
+    const partner = await registerPartner(app, 'pt');
+    await seed(partner, 3, 2_000_000_000);
     const restore = freezeDate(INSIDE_WINDOW);
     try {
       const res = await request(app.getHttpServer())
@@ -80,8 +80,8 @@ describe('Affiliate — payout window + thresholds', () => {
   });
 
   it('blocks payout below the minimum balance', async () => {
-    const partner = await joinedPartner('pb');
-    await seedProfile(partner.id, 12, 500_000_000); // ₹500 < ₹1000
+    const partner = await registerPartner(app, 'pb');
+    await seed(partner, 12, 500_000_000); // ₹500 < ₹1000
     const restore = freezeDate(INSIDE_WINDOW);
     try {
       const res = await request(app.getHttpServer())
@@ -96,8 +96,8 @@ describe('Affiliate — payout window + thresholds', () => {
   });
 
   it('creates a payout when eligible and zeroes the balance; admin reject restores it', async () => {
-    const partner = await joinedPartner('pok');
-    await seedProfile(partner.id, 12, 2_000_000_000);
+    const partner = await registerPartner(app, 'pok');
+    await seed(partner, 12, 2_000_000_000);
     const admin = await createAdmin(app);
 
     const restore = freezeDate(INSIDE_WINDOW);
@@ -121,23 +121,21 @@ describe('Affiliate — payout window + thresholds', () => {
     }
 
     // Balance moved out atomically.
-    const afterRequest = await profiles.findOne({
-      where: { userId: partner.id },
-    });
+    const afterRequest = await partners.findOne({ where: { id: partner.id } });
     expect(Number(afterRequest?.earningsBalance)).toBe(0);
 
     // A second request while one is pending is rejected.
     const restore2 = freezeDate(INSIDE_WINDOW);
     try {
       // top the balance back up so only the pending-guard can block it
-      await seedProfile(partner.id, 12, 2_000_000_000);
+      await seed(partner, 12, 2_000_000_000);
       const dup = await request(app.getHttpServer())
         .post('/partner/payouts')
         .set('Authorization', bearer(partner.accessToken))
         .send({})
         .expect(400);
       expect(errorCode(dup.body)).toBe('PAYOUT_PENDING_EXISTS');
-      await seedProfile(partner.id, 12, 0);
+      await seed(partner, 12, 0);
     } finally {
       restore2();
     }
@@ -152,13 +150,13 @@ describe('Affiliate — payout window + thresholds', () => {
       PayoutStatus.REJECTED,
     );
 
-    const restored = await profiles.findOne({ where: { userId: partner.id } });
+    const restored = await partners.findOne({ where: { id: partner.id } });
     expect(Number(restored?.earningsBalance)).toBe(2_000_000_000);
   });
 
   it('lets an admin approve (mark paid) a payout', async () => {
-    const partner = await joinedPartner('pap');
-    await seedProfile(partner.id, 15, 1_500_000_000);
+    const partner = await registerPartner(app, 'pap');
+    await seed(partner, 15, 1_500_000_000);
     const admin = await createAdmin(app);
 
     const restore = freezeDate(INSIDE_WINDOW);
@@ -184,11 +182,11 @@ describe('Affiliate — payout window + thresholds', () => {
     expect(payout.payoutRef).toBe('UTR123');
 
     // Balance stays at 0 (already moved out at request time).
-    const p = await profiles.findOne({ where: { userId: partner.id } });
+    const p = await partners.findOne({ where: { id: partner.id } });
     expect(Number(p?.earningsBalance)).toBe(0);
   });
 
-  it('forbids a non-admin from listing partners', async () => {
+  it('forbids a non-admin (customer) from listing partners', async () => {
     const user = await registerUser(app, 'nonadmin');
     await request(app.getHttpServer())
       .get('/admin/partners')

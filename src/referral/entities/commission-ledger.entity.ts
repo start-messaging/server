@@ -7,7 +7,7 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity.js';
+import { ReferralPartner } from './referral-partner.entity.js';
 import { bigintTransformer } from '../../common/database/bigint.transformer.js';
 
 export enum CommissionType {
@@ -27,21 +27,18 @@ export enum CommissionType {
  * Deliberately does NOT extend BaseEntity (immutable, no updatedAt/deletedAt).
  */
 @Index('uq_commission_ledger_idempotency', ['idempotencyKey'], { unique: true })
-@Index('IDX_commission_ledger_partner_createdAt', [
-  'partnerUserId',
-  'createdAt',
-])
+@Index('IDX_commission_ledger_partner_createdAt', ['partnerId', 'createdAt'])
 @Entity('commission_ledger')
 export class CommissionLedger {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @Column({ type: 'uuid' })
-  partnerUserId: string;
+  partnerId: string;
 
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'partnerUserId' })
-  partner?: User;
+  @ManyToOne(() => ReferralPartner)
+  @JoinColumn({ name: 'partnerId' })
+  partner?: ReferralPartner;
 
   @Column({ type: 'enum', enum: CommissionType })
   type: CommissionType;

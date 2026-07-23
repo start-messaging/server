@@ -21,14 +21,15 @@ export class AdminReferralController {
   @Get('partners')
   @ApiOperation({ summary: 'List all affiliate partners (paginated)' })
   async listPartners(@Query() query: PaginationQueryDto) {
-    const [items, total] = await this.referralService.listAllProfiles(
+    const [items, total] = await this.referralService.listAllPartners(
       query.page,
       query.limit,
     );
     const rows = items.map((p) => ({
       id: p.id,
-      userId: p.userId,
-      email: p.user?.email ?? null,
+      partnerId: p.id,
+      email: p.email,
+      fullName: p.fullName,
       referralCode: p.referralCode,
       status: p.status,
       commissionPercent: p.commissionBps / 100,
@@ -50,8 +51,9 @@ export class AdminReferralController {
     );
     const rows = items.map((p) => ({
       ...presentPayout(p),
-      partnerUserId: p.partnerUserId,
+      partnerId: p.partnerId,
       partnerEmail: p.partner?.email ?? null,
+      partnerName: p.partner?.fullName ?? null,
       payoutDetails: p.payoutDetails,
     }));
     return paginatedResponse(rows, total, query.page, query.limit);

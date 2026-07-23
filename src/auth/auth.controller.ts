@@ -31,8 +31,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, user } =
-      await this.authService.register(dto, req.ip ?? 'unknown');
+    const { accessToken, refreshToken, user } = await this.authService.register(
+      dto,
+      req.ip ?? 'unknown',
+    );
 
     res.cookie(
       'refresh_token',
@@ -72,8 +74,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, user } =
-      await this.authService.login(dto, req.ip ?? 'unknown');
+    const { accessToken, refreshToken, user } = await this.authService.login(
+      dto,
+      req.ip ?? 'unknown',
+    );
 
     res.cookie(
       'refresh_token',
@@ -105,7 +109,11 @@ export class AuthController {
     }
 
     const { accessToken, refreshToken, user } =
-      await this.authService.refreshTokens(parsed.userId, parsed.token, req.ip ?? 'unknown');
+      await this.authService.refreshTokens(
+        parsed.userId,
+        parsed.token,
+        req.ip ?? 'unknown',
+      );
 
     res.cookie(
       'refresh_token',

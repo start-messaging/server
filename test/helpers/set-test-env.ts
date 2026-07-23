@@ -32,6 +32,12 @@ process.env.JWT_SECRET =
 // don't accidentally expire the token.
 process.env.JWT_EXPIRATION = '90d';
 
+// Partner portal JWT — distinct secret (full customer/partner isolation) and a
+// long TTL so clock-frozen payout-window specs keep a valid partner token.
+process.env.PARTNER_JWT_SECRET =
+  process.env.PARTNER_JWT_SECRET ?? 'test-partner-jwt-secret-not-for-prod';
+process.env.PARTNER_JWT_EXPIRATION = '90d';
+
 // Console transports — never hit a real gateway during tests.
 process.env.SMS_DRIVER = 'console';
 process.env.MAIL_DRIVER = 'console';

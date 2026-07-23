@@ -10,9 +10,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import {
-  ReferralProfile,
-  ReferralProfileStatus,
-} from './entities/referral-profile.entity.js';
+  ReferralPartner,
+  ReferralPartnerStatus,
+} from './entities/referral-partner.entity.js';
 import { Referral, ReferralStatus } from './entities/referral.entity.js';
 import {
   CommissionLedger,
@@ -32,13 +32,20 @@ interface AffiliateConfig {
   endDay: number;
 }
 
+interface CreatePartnerFields {
+  email: string;
+  passwordHash: string;
+  fullName: string;
+  mobileNumber?: string | null;
+}
+
 @Injectable()
 export class ReferralService {
   private readonly logger = new Logger(ReferralService.name);
 
   constructor(
-    @InjectRepository(ReferralProfile)
-    private readonly profileRepo: Repository<ReferralProfile>,
+    @InjectRepository(ReferralPartner)
+    private readonly partnerRepo: Repository<ReferralPartner>,
     @InjectRepository(Referral)
     private readonly referralRepo: Repository<Referral>,
     @InjectRepository(CommissionLedger)
@@ -86,69 +93,84 @@ export class ReferralService {
     return code;
   }
 
-  // ── Join / profile ─────────────────────────────────────
+  // ── Partner creation (called by PartnerAuthService.register) ──
 
-  async joinProgram(
-    userId: string,
-    payoutDetails?: Record<string, any>,
-  ): Promise<ReferralProfile> {
-    const existing = await this.profileRepo.findOne({ where: { userId } });
-    if (existing) {
-      throw new BadRequestException({
-        code: ErrorCodes.ALREADY_A_PARTNER,
-        message: 'You have already joined the affiliate program',
-      });
-    }
-
+  /**
+   * Create a partner with a freshly-allocated unique referral code. Email
+   * uniqueness is pre-checked by the auth service; here we only retry on the
+   * (extremely unlikely) referral-code collision.
+   */
+  async createPartnerWithCode(
+    fields: CreatePartnerFields,
+  ): Promise<ReferralPartner> {
     const { commissionBps } = this.cfg();
-    // Retry on the (extremely unlikely) referral-code collision.
     for (let attempt = 0; attempt < 5; attempt++) {
-      const referralCode = this.generateCode();
-      const profile = this.profileRepo.create({
-        userId,
-        referralCode,
-        status: ReferralProfileStatus.ACTIVE,
+      const partner = this.partnerRepo.create({
+        email: fields.email,
+        passwordHash: fields.passwordHash,
+        fullName: fields.fullName,
+        mobileNumber: fields.mobileNumber ?? null,
+        status: ReferralPartnerStatus.ACTIVE,
+        referralCode: this.generateCode(),
         commissionBps,
         earningsBalance: 0,
         totalEarned: 0,
         paidUsersCount: 0,
-        payoutDetails: payoutDetails ?? null,
       });
       try {
-        return await this.profileRepo.save(profile);
+        return await this.partnerRepo.save(partner);
       } catch (err: any) {
-        if (err?.code === '23505' && attempt < 4) continue; // unique violation
+        // Retry only on a code collision; let an email collision surface.
+        if (err?.code === '23505' && attempt < 4) continue;
         throw err;
       }
     }
     throw new BadRequestException('Could not allocate a referral code');
   }
 
-  getProfileOrNull(userId: string): Promise<ReferralProfile | null> {
-    return this.profileRepo.findOne({ where: { userId } });
+  findPartnerByEmail(email: string): Promise<ReferralPartner | null> {
+    return this.partnerRepo.findOne({
+      where: { email: email.trim().toLowerCase() },
+    });
   }
 
-  async getProfileOrThrow(userId: string): Promise<ReferralProfile> {
-    const profile = await this.getProfileOrNull(userId);
-    if (!profile) {
+  findPartnerById(id: string): Promise<ReferralPartner | null> {
+    return this.partnerRepo.findOne({ where: { id } });
+  }
+
+  async getPartnerOrThrow(id: string): Promise<ReferralPartner> {
+    const partner = await this.findPartnerById(id);
+    if (!partner) {
       throw new NotFoundException({
         code: ErrorCodes.NOT_A_PARTNER,
-        message: 'You have not joined the affiliate program',
+        message: 'Partner account not found',
       });
     }
-    return profile;
+    return partner;
   }
 
-  // ── Attribution (called at signup) ─────────────────────
+  save(partner: ReferralPartner): Promise<ReferralPartner> {
+    return this.partnerRepo.save(partner);
+  }
+
+  async updatePayoutDetails(
+    partnerId: string,
+    payoutDetails: Record<string, any>,
+  ): Promise<ReferralPartner> {
+    const partner = await this.getPartnerOrThrow(partnerId);
+    partner.payoutDetails = payoutDetails;
+    return this.partnerRepo.save(partner);
+  }
+
+  // ── Attribution (called at customer signup) ─────────────
 
   async attributeReferral(referredUserId: string, code: string): Promise<void> {
     const normalized = code.trim().toUpperCase();
-    const profile = await this.profileRepo.findOne({
+    const partner = await this.partnerRepo.findOne({
       where: { referralCode: normalized },
     });
-    if (!profile) return; // invalid code — ignore silently
-    if (profile.status !== ReferralProfileStatus.ACTIVE) return;
-    if (profile.userId === referredUserId) return; // no self-referral
+    if (!partner) return; // invalid code — ignore silently
+    if (partner.status !== ReferralPartnerStatus.ACTIVE) return;
 
     const already = await this.referralRepo.findOne({
       where: { referredUserId },
@@ -158,7 +180,7 @@ export class ReferralService {
     try {
       await this.referralRepo.save(
         this.referralRepo.create({
-          partnerUserId: profile.userId,
+          partnerId: partner.id,
           referredUserId,
           referralCode: normalized,
           status: ReferralStatus.SIGNED_UP,
@@ -188,41 +210,41 @@ export class ReferralService {
     });
     if (!referral) return;
 
-    const profileRepo = manager.getRepository(ReferralProfile);
+    const partnerRepo = manager.getRepository(ReferralPartner);
     const ledgerRepo = manager.getRepository(CommissionLedger);
 
     const idempotencyKey = `commission:${paymentId}`;
     const existing = await ledgerRepo.findOne({ where: { idempotencyKey } });
     if (existing) return;
 
-    // Lock the partner's profile row to serialise balance updates.
-    const profile = await profileRepo
+    // Lock the partner row to serialise balance updates.
+    const partner = await partnerRepo
       .createQueryBuilder('p')
       .setLock('pessimistic_write')
-      .where('p.userId = :userId', { userId: referral.partnerUserId })
+      .where('p.id = :id', { id: referral.partnerId })
       .getOne();
-    if (!profile || profile.status !== ReferralProfileStatus.ACTIVE) return;
+    if (!partner || partner.status !== ReferralPartnerStatus.ACTIVE) return;
 
     const commission = Math.round(
-      (baseAmountMicros * profile.commissionBps) / 10000,
+      (baseAmountMicros * partner.commissionBps) / 10000,
     );
 
     // Mark the referral paid (first payment only).
     if (referral.status !== ReferralStatus.PAID) {
       referral.status = ReferralStatus.PAID;
       referral.firstPaidAt = new Date();
-      profile.paidUsersCount += 1;
+      partner.paidUsersCount += 1;
       await referralRepo.save(referral);
     }
 
     if (commission > 0) {
-      const balanceAfter = Number(profile.earningsBalance) + commission;
-      profile.earningsBalance = balanceAfter;
-      profile.totalEarned = Number(profile.totalEarned) + commission;
+      const balanceAfter = Number(partner.earningsBalance) + commission;
+      partner.earningsBalance = balanceAfter;
+      partner.totalEarned = Number(partner.totalEarned) + commission;
 
       await ledgerRepo.save(
         ledgerRepo.create({
-          partnerUserId: profile.userId,
+          partnerId: partner.id,
           type: CommissionType.EARN,
           amount: commission,
           balanceAfter,
@@ -234,34 +256,34 @@ export class ReferralService {
       );
     }
 
-    await profileRepo.save(profile);
+    await partnerRepo.save(partner);
   }
 
   // ── Partner reads ──────────────────────────────────────
 
-  async getStats(userId: string) {
-    const profile = await this.getProfileOrThrow(userId);
+  async getStats(partnerId: string) {
+    const partner = await this.getPartnerOrThrow(partnerId);
     const cfg = this.cfg();
     const totalReferred = await this.referralRepo.count({
-      where: { partnerUserId: userId },
+      where: { partnerId },
     });
 
-    const meetsPaidUsers = profile.paidUsersCount >= cfg.minPaidUsers;
-    const balance = Number(profile.earningsBalance);
+    const meetsPaidUsers = partner.paidUsersCount >= cfg.minPaidUsers;
+    const balance = Number(partner.earningsBalance);
     const meetsBalance = balance >= cfg.minWithdrawalMicros;
     const withinWindow = this.isWithinPayoutWindow(new Date());
 
     return {
       profile: {
-        referralCode: profile.referralCode,
-        status: profile.status,
-        commissionPercent: profile.commissionBps / 100,
-        payoutDetails: profile.payoutDetails,
+        referralCode: partner.referralCode,
+        status: partner.status,
+        commissionPercent: partner.commissionBps / 100,
+        payoutDetails: partner.payoutDetails,
       },
       totalReferred,
-      paidUsersCount: profile.paidUsersCount,
+      paidUsersCount: partner.paidUsersCount,
       earningsBalanceMicros: balance,
-      totalEarnedMicros: Number(profile.totalEarned),
+      totalEarnedMicros: Number(partner.totalEarned),
       eligibility: {
         minPaidUsers: cfg.minPaidUsers,
         meetsPaidUsers,
@@ -275,12 +297,12 @@ export class ReferralService {
   }
 
   async listReferrals(
-    userId: string,
+    partnerId: string,
     page: number,
     limit: number,
   ): Promise<[Referral[], number]> {
     return this.referralRepo.findAndCount({
-      where: { partnerUserId: userId },
+      where: { partnerId },
       relations: ['referredUser'],
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
@@ -289,12 +311,12 @@ export class ReferralService {
   }
 
   async listCommissions(
-    userId: string,
+    partnerId: string,
     page: number,
     limit: number,
   ): Promise<[CommissionLedger[], number]> {
     return this.ledgerRepo.findAndCount({
-      where: { partnerUserId: userId },
+      where: { partnerId },
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -302,12 +324,12 @@ export class ReferralService {
   }
 
   async listPayouts(
-    userId: string,
+    partnerId: string,
     page: number,
     limit: number,
   ): Promise<[PayoutRequest[], number]> {
     return this.payoutRepo.findAndCount({
-      where: { partnerUserId: userId },
+      where: { partnerId },
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -317,29 +339,29 @@ export class ReferralService {
   // ── Payout request (thresholds + window enforced here) ──
 
   async requestPayout(
-    userId: string,
+    partnerId: string,
     payoutDetails?: Record<string, any>,
   ): Promise<PayoutRequest> {
     const cfg = this.cfg();
     const now = new Date();
 
     return this.dataSource.transaction(async (manager) => {
-      const profileRepo = manager.getRepository(ReferralProfile);
+      const partnerRepo = manager.getRepository(ReferralPartner);
       const payoutRepo = manager.getRepository(PayoutRequest);
       const ledgerRepo = manager.getRepository(CommissionLedger);
 
-      const profile = await profileRepo
+      const partner = await partnerRepo
         .createQueryBuilder('p')
         .setLock('pessimistic_write')
-        .where('p.userId = :userId', { userId })
+        .where('p.id = :id', { id: partnerId })
         .getOne();
-      if (!profile) {
+      if (!partner) {
         throw new NotFoundException({
           code: ErrorCodes.NOT_A_PARTNER,
-          message: 'You have not joined the affiliate program',
+          message: 'Partner account not found',
         });
       }
-      if (profile.status !== ReferralProfileStatus.ACTIVE) {
+      if (partner.status !== ReferralPartnerStatus.ACTIVE) {
         throw new ForbiddenException({
           code: ErrorCodes.PARTNER_SUSPENDED,
           message: 'Your partner account is suspended',
@@ -347,7 +369,7 @@ export class ReferralService {
       }
 
       const pending = await payoutRepo.findOne({
-        where: { partnerUserId: userId, status: PayoutStatus.REQUESTED },
+        where: { partnerId, status: PayoutStatus.REQUESTED },
       });
       if (pending) {
         throw new BadRequestException({
@@ -364,18 +386,18 @@ export class ReferralService {
         });
       }
 
-      if (profile.paidUsersCount < cfg.minPaidUsers) {
+      if (partner.paidUsersCount < cfg.minPaidUsers) {
         throw new ForbiddenException({
           code: ErrorCodes.PAYOUT_THRESHOLD_NOT_MET,
           message: `You need at least ${cfg.minPaidUsers} paid referred users to withdraw`,
           details: {
             required: cfg.minPaidUsers,
-            current: profile.paidUsersCount,
+            current: partner.paidUsersCount,
           },
         });
       }
 
-      const amount = Number(profile.earningsBalance);
+      const amount = Number(partner.earningsBalance);
       if (amount < cfg.minWithdrawalMicros) {
         throw new BadRequestException({
           code: ErrorCodes.PAYOUT_MIN_BALANCE_NOT_MET,
@@ -387,25 +409,25 @@ export class ReferralService {
         });
       }
 
-      if (payoutDetails) profile.payoutDetails = payoutDetails;
+      if (payoutDetails) partner.payoutDetails = payoutDetails;
 
       const payout = await payoutRepo.save(
         payoutRepo.create({
-          partnerUserId: userId,
+          partnerId,
           amount,
           currency: 'INR',
           status: PayoutStatus.REQUESTED,
           windowMonth: this.currentWindowMonth(now),
-          payoutDetails: profile.payoutDetails,
+          payoutDetails: partner.payoutDetails,
         }),
       );
 
       // Move the balance out atomically so it can't be double-withdrawn.
-      profile.earningsBalance = 0;
-      await profileRepo.save(profile);
+      partner.earningsBalance = 0;
+      await partnerRepo.save(partner);
       await ledgerRepo.save(
         ledgerRepo.create({
-          partnerUserId: userId,
+          partnerId,
           type: CommissionType.WITHDRAWAL,
           amount,
           balanceAfter: 0,
@@ -421,12 +443,11 @@ export class ReferralService {
 
   // ── Admin ──────────────────────────────────────────────
 
-  async listAllProfiles(
+  async listAllPartners(
     page: number,
     limit: number,
-  ): Promise<[ReferralProfile[], number]> {
-    return this.profileRepo.findAndCount({
-      relations: ['user'],
+  ): Promise<[ReferralPartner[], number]> {
+    return this.partnerRepo.findAndCount({
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -476,7 +497,7 @@ export class ReferralService {
   ): Promise<PayoutRequest> {
     return this.dataSource.transaction(async (manager) => {
       const payoutRepo = manager.getRepository(PayoutRequest);
-      const profileRepo = manager.getRepository(ReferralProfile);
+      const partnerRepo = manager.getRepository(ReferralPartner);
       const ledgerRepo = manager.getRepository(CommissionLedger);
 
       const payout = await payoutRepo.findOne({ where: { id: payoutId } });
@@ -497,18 +518,18 @@ export class ReferralService {
       await payoutRepo.save(payout);
 
       // Return the funds to the partner's balance.
-      const profile = await profileRepo
+      const partner = await partnerRepo
         .createQueryBuilder('p')
         .setLock('pessimistic_write')
-        .where('p.userId = :userId', { userId: payout.partnerUserId })
+        .where('p.id = :id', { id: payout.partnerId })
         .getOne();
-      if (profile) {
-        const balanceAfter = Number(profile.earningsBalance) + payout.amount;
-        profile.earningsBalance = balanceAfter;
-        await profileRepo.save(profile);
+      if (partner) {
+        const balanceAfter = Number(partner.earningsBalance) + payout.amount;
+        partner.earningsBalance = balanceAfter;
+        await partnerRepo.save(partner);
         await ledgerRepo.save(
           ledgerRepo.create({
-            partnerUserId: payout.partnerUserId,
+            partnerId: payout.partnerId,
             type: CommissionType.REVERSAL,
             amount: payout.amount,
             balanceAfter,

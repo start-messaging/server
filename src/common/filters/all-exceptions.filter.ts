@@ -27,7 +27,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const exceptionResponse = 
+    const exceptionResponse =
       exception instanceof HttpException
         ? exception.getResponse()
         : 'Internal server error';
@@ -47,7 +47,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     // Log the error for PostHog (via OTEL)
     otelLogger.emit({
-      severityNumber: status >= 500 ? SeverityNumber.ERROR : SeverityNumber.WARN,
+      severityNumber:
+        status >= 500 ? SeverityNumber.ERROR : SeverityNumber.WARN,
       severityText: status >= 500 ? 'ERROR' : 'WARN',
       body: logBody,
       attributes,
@@ -55,7 +56,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     // Log the error for Console (via Pino)
     if (status >= 500) {
-      this.logger.error(logBody, exception instanceof Error ? exception.stack : undefined);
+      this.logger.error(
+        logBody,
+        exception instanceof Error ? exception.stack : undefined,
+      );
     } else {
       this.logger.warn(logBody);
     }
@@ -64,13 +68,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let details: any;
 
     if (exception instanceof HttpException) {
-        const resp = exception.getResponse() as any;
-        code = resp.code || this.httpStatusToErrorCode(status);
-        if (Array.isArray(resp.message)) {
-            details = resp.message.map((m: string) => ({ message: m }));
-            message = resp.message[0] || 'Validation failed';
-            code = ErrorCodes.VALIDATION_ERROR;
-        }
+      const resp = exception.getResponse() as any;
+      code = resp.code || this.httpStatusToErrorCode(status);
+      if (Array.isArray(resp.message)) {
+        details = resp.message.map((m: string) => ({ message: m }));
+        message = resp.message[0] || 'Validation failed';
+        code = ErrorCodes.VALIDATION_ERROR;
+      }
     }
 
     const errorResponse: ApiErrorResponse = {
@@ -101,12 +105,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   private httpStatusToErrorCode(status: number): string {
     switch (status) {
-      case 400: return ErrorCodes.INVALID_INPUT;
-      case 401: return ErrorCodes.UNAUTHORIZED;
-      case 403: return ErrorCodes.FORBIDDEN;
-      case 404: return ErrorCodes.NOT_FOUND;
-      case 409: return ErrorCodes.CONFLICT;
-      default: return ErrorCodes.INTERNAL_ERROR;
+      case 400:
+        return ErrorCodes.INVALID_INPUT;
+      case 401:
+        return ErrorCodes.UNAUTHORIZED;
+      case 403:
+        return ErrorCodes.FORBIDDEN;
+      case 404:
+        return ErrorCodes.NOT_FOUND;
+      case 409:
+        return ErrorCodes.CONFLICT;
+      default:
+        return ErrorCodes.INTERNAL_ERROR;
     }
   }
 }

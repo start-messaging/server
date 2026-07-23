@@ -103,3 +103,44 @@ export async function onboardUser(
 export function bearer(token: string): string {
   return `Bearer ${token}`;
 }
+
+export interface RegisteredPartner {
+  id: string;
+  email: string;
+  password: string;
+  accessToken: string;
+  refreshToken: string;
+  referralCode: string;
+}
+
+/**
+ * Register an affiliate partner via the portal's own auth stack and return the
+ * partner identity + tokens. Partners are a SEPARATE identity from customers.
+ */
+export async function registerPartner(
+  app: INestApplication,
+  emailPrefix = 'partner',
+): Promise<RegisteredPartner> {
+  const email = uniqueEmail(emailPrefix);
+  const res = await request(app.getHttpServer())
+    .post('/partner/auth/register')
+    .send({
+      email,
+      password: DEFAULT_PASSWORD,
+      fullName: 'Test Partner',
+    })
+    .expect(201);
+  const data = unwrap<{
+    accessToken: string;
+    refreshToken: string;
+    partner: { id: string; referralCode: string };
+  }>(res.body);
+  return {
+    id: data.partner.id,
+    email,
+    password: DEFAULT_PASSWORD,
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    referralCode: data.partner.referralCode,
+  };
+}

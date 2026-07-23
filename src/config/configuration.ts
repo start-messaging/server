@@ -20,6 +20,13 @@ export default () => ({
     expiration: process.env.JWT_EXPIRATION ?? '15m',
     refreshExpiration: process.env.JWT_REFRESH_EXPIRATION ?? '7d',
   },
+  // Separate secret for the affiliate partner portal so a customer token can
+  // never authenticate a partner route (and vice-versa).
+  partnerJwt: {
+    secret:
+      process.env.PARTNER_JWT_SECRET ?? process.env.JWT_SECRET ?? undefined,
+    expiration: process.env.PARTNER_JWT_EXPIRATION ?? '1h',
+  },
   sms: {
     // 'console' (dev/test, logs the OTP) or 'twofactor' (real gateway).
     driver: process.env.SMS_DRIVER ?? 'console',

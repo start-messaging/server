@@ -19,6 +19,12 @@ export const envValidationSchema = Joi.object({
   JWT_EXPIRATION: Joi.string().default('15m'),
   JWT_REFRESH_EXPIRATION: Joi.string().default('7d'),
 
+  // Partner-portal JWT (affiliate). Set a DISTINCT secret in production for full
+  // isolation; if omitted it falls back to JWT_SECRET and the `typ` claim still
+  // keeps customer and partner tokens from crossing over.
+  PARTNER_JWT_SECRET: Joi.string().optional(),
+  PARTNER_JWT_EXPIRATION: Joi.string().default('1h'),
+
   // CORS
   CORS_ORIGINS: Joi.string().optional(),
 

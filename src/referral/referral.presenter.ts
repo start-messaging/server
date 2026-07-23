@@ -1,4 +1,4 @@
-import { ReferralProfile } from './entities/referral-profile.entity.js';
+import { ReferralPartner } from './entities/referral-partner.entity.js';
 import { Referral } from './entities/referral.entity.js';
 import { CommissionLedger } from './entities/commission-ledger.entity.js';
 import { PayoutRequest } from './entities/payout-request.entity.js';
@@ -12,11 +12,15 @@ export function maskEmail(email?: string | null): string | null {
   return `${head}${'*'.repeat(Math.max(local.length - 2, 1))}@${domain}`;
 }
 
-export function presentProfile(p: ReferralProfile) {
+/** Safe public shape of a partner — never exposes passwordHash/refreshToken. */
+export function presentPartner(p: ReferralPartner) {
   return {
     id: p.id,
-    referralCode: p.referralCode,
+    email: p.email,
+    fullName: p.fullName,
+    mobileNumber: p.mobileNumber,
     status: p.status,
+    referralCode: p.referralCode,
     commissionPercent: p.commissionBps / 100,
     earningsBalanceMicros: Number(p.earningsBalance),
     totalEarnedMicros: Number(p.totalEarned),

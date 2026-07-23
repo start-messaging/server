@@ -1,12 +1,12 @@
 import { INestApplication } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { createTestApp } from '../helpers/create-test-app';
-import { unwrap, errorCode } from '../helpers/envelope';
+import { unwrap } from '../helpers/envelope';
 import {
-  registerUser,
+  registerPartner,
   uniqueEmail,
   DEFAULT_PASSWORD,
   bearer,
@@ -16,59 +16,42 @@ import {
   Referral,
   ReferralStatus,
 } from '../../src/referral/entities/referral.entity';
-import { ReferralProfile } from '../../src/referral/entities/referral-profile.entity';
+import { ReferralPartner } from '../../src/referral/entities/referral-partner.entity';
 
-describe('Affiliate — join, attribution and commission', () => {
+describe('Affiliate — attribution and commission', () => {
   let app: INestApplication;
+  let partners: Repository<ReferralPartner>;
+  let referrals: Repository<Referral>;
 
   beforeAll(async () => {
     ({ app } = await createTestApp());
+    partners = app.get<Repository<ReferralPartner>>(
+      getRepositoryToken(ReferralPartner),
+    );
+    referrals = app.get<Repository<Referral>>(getRepositoryToken(Referral));
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  it('joins the program and returns a referral code', async () => {
-    const partner = await registerUser(app, 'partner');
-    const res = await request(app.getHttpServer())
-      .post('/partner/join')
-      .set('Authorization', bearer(partner.accessToken))
-      .send({})
-      .expect(201);
-    const profile = unwrap<{ referralCode: string; commissionPercent: number }>(
-      res.body,
-    );
-    expect(profile.referralCode).toMatch(/^[A-Z0-9]{8}$/);
-    expect(profile.commissionPercent).toBe(10);
-  });
+  it('gives a registered partner a referral code and 10% rate', async () => {
+    const partner = await registerPartner(app, 'partner');
+    expect(partner.referralCode).toMatch(/^[A-Z0-9]{8}$/);
 
-  it('rejects a second join with ALREADY_A_PARTNER', async () => {
-    const partner = await registerUser(app, 'partner');
-    await request(app.getHttpServer())
-      .post('/partner/join')
-      .set('Authorization', bearer(partner.accessToken))
-      .send({})
-      .expect(201);
     const res = await request(app.getHttpServer())
-      .post('/partner/join')
+      .get('/partner/stats')
       .set('Authorization', bearer(partner.accessToken))
-      .send({})
-      .expect(400);
-    expect(errorCode(res.body)).toBe('ALREADY_A_PARTNER');
+      .expect(200);
+    const stats = unwrap<{ profile: { commissionPercent: number } }>(res.body);
+    expect(stats.profile.commissionPercent).toBe(10);
   });
 
   it('attributes a signup with a referral code and pays commission on payment', async () => {
-    // Partner joins to get a code.
-    const partner = await registerUser(app, 'partner');
-    const joinRes = await request(app.getHttpServer())
-      .post('/partner/join')
-      .set('Authorization', bearer(partner.accessToken))
-      .send({})
-      .expect(201);
-    const code = unwrap<{ referralCode: string }>(joinRes.body).referralCode;
+    const partner = await registerPartner(app, 'partner');
+    const code = partner.referralCode;
 
-    // A new user signs up WITH the referral code.
+    // A new customer signs up WITH the referral code.
     const referredEmail = uniqueEmail('referred');
     const signup = await request(app.getHttpServer())
       .post('/auth/register')
@@ -83,14 +66,9 @@ describe('Affiliate — join, attribution and commission', () => {
     const referredUserId = unwrap<{ user: { id: string } }>(signup.body).user
       .id;
 
-    // Attribution row exists, still just signed_up.
-    const referralRepo = app.get<import('typeorm').Repository<Referral>>(
-      getRepositoryToken(Referral),
-    );
-    const attribution = await referralRepo.findOne({
-      where: { referredUserId },
-    });
-    expect(attribution?.partnerUserId).toBe(partner.id);
+    // Attribution row exists, still just signed_up, keyed to the PARTNER id.
+    const attribution = await referrals.findOne({ where: { referredUserId } });
+    expect(attribution?.partnerId).toBe(partner.id);
     expect(attribution?.status).toBe(ReferralStatus.SIGNED_UP);
 
     // Simulate a completed ₹1000 top-up (base = 1_000_000_000 micros) via the
@@ -109,17 +87,12 @@ describe('Affiliate — join, attribution and commission', () => {
     );
 
     // 10% commission = 100_000_000 micros credited; referral now paid.
-    const profileRepo = app.get<import('typeorm').Repository<ReferralProfile>>(
-      getRepositoryToken(ReferralProfile),
-    );
-    const profile = await profileRepo.findOne({
-      where: { userId: partner.id },
-    });
-    expect(Number(profile?.earningsBalance)).toBe(100_000_000);
-    expect(Number(profile?.totalEarned)).toBe(100_000_000);
-    expect(profile?.paidUsersCount).toBe(1);
+    const p = await partners.findOne({ where: { id: partner.id } });
+    expect(Number(p?.earningsBalance)).toBe(100_000_000);
+    expect(Number(p?.totalEarned)).toBe(100_000_000);
+    expect(p?.paidUsersCount).toBe(1);
 
-    const updated = await referralRepo.findOne({ where: { referredUserId } });
+    const updated = await referrals.findOne({ where: { referredUserId } });
     expect(updated?.status).toBe(ReferralStatus.PAID);
 
     // Idempotent: re-running the same paymentId must not double-pay.
@@ -131,7 +104,7 @@ describe('Affiliate — join, attribution and commission', () => {
         baseMicros,
       ),
     );
-    const after = await profileRepo.findOne({ where: { userId: partner.id } });
+    const after = await partners.findOne({ where: { id: partner.id } });
     expect(Number(after?.earningsBalance)).toBe(100_000_000);
     expect(after?.paidUsersCount).toBe(1);
   });
@@ -148,11 +121,8 @@ describe('Affiliate — join, attribution and commission', () => {
       })
       .expect(201);
     const userId = unwrap<{ user: { id: string } }>(signup.body).user.id;
-    const referralRepo = app.get<import('typeorm').Repository<Referral>>(
-      getRepositoryToken(Referral),
-    );
     expect(
-      await referralRepo.findOne({ where: { referredUserId: userId } }),
+      await referrals.findOne({ where: { referredUserId: userId } }),
     ).toBeNull();
   });
 });
