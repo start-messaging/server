@@ -14,6 +14,14 @@ export class TemplateFilterQueryDto extends PaginationQueryDto {
   @IsEnum(TemplateStatus)
   status?: TemplateStatus;
 
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Filter to a specific owner (omit for all + system templates)',
+  })
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
+
   @ApiPropertyOptional({ description: 'Search by template name' })
   @IsOptional()
   @IsString()

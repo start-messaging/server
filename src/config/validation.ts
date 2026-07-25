@@ -9,6 +9,7 @@ export const envValidationSchema = Joi.object({
   DATABASE_NAME: Joi.string().required(),
   DATABASE_USERNAME: Joi.string().required(),
   DATABASE_PASSWORD: Joi.string().required(),
+  DATABASE_SYNCHRONIZE: Joi.boolean().default(false),
 
   // Auth
   BCRYPT_ROUNDS: Joi.number().min(4).max(20).default(10),
@@ -18,8 +19,17 @@ export const envValidationSchema = Joi.object({
   JWT_EXPIRATION: Joi.string().default('15m'),
   JWT_REFRESH_EXPIRATION: Joi.string().default('7d'),
 
+  // Partner-portal JWT (affiliate). Set a DISTINCT secret in production for full
+  // isolation; if omitted it falls back to JWT_SECRET and the `typ` claim still
+  // keeps customer and partner tokens from crossing over.
+  PARTNER_JWT_SECRET: Joi.string().optional(),
+  PARTNER_JWT_EXPIRATION: Joi.string().default('1h'),
+
   // CORS
   CORS_ORIGINS: Joi.string().optional(),
+
+  // SMS transport driver ('console' logs the OTP; 'twofactor' is the real gateway)
+  SMS_DRIVER: Joi.string().valid('console', 'twofactor').default('console'),
 
   // Fast2SMS
   FAST2SMS_API_KEY: Joi.string().optional(),
@@ -31,6 +41,20 @@ export const envValidationSchema = Joi.object({
   RAZORPAY_KEY_ID: Joi.string().optional(),
   RAZORPAY_KEY_SECRET: Joi.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
+
+  // Payment convenience-fee (customer-fee-bearer) config
+  RAZORPAY_FEE_PERCENT: Joi.number().min(0).max(100).default(2),
+  RAZORPAY_GST_PERCENT: Joi.number().min(0).max(100).default(18),
+  PAYMENT_FEE_BEARER: Joi.string()
+    .valid('customer', 'platform')
+    .default('customer'),
+
+  // Affiliate / referral program
+  AFFILIATE_COMMISSION_PERCENT: Joi.number().min(0).max(100).default(10),
+  AFFILIATE_MIN_PAID_USERS: Joi.number().integer().min(0).default(10),
+  AFFILIATE_MIN_WITHDRAWAL: Joi.number().min(0).default(1000),
+  AFFILIATE_PAYOUT_START_DAY: Joi.number().integer().min(1).max(28).default(21),
+  AFFILIATE_PAYOUT_END_DAY: Joi.number().integer().min(1).max(28).default(28),
 
   // Google OAuth
   GOOGLE_CLIENT_ID: Joi.string().optional(),
@@ -49,13 +73,16 @@ export const envValidationSchema = Joi.object({
   // Redis
   REDIS_URL: Joi.string().optional(),
 
+  // Email transport driver ('console' logs the email; 'mailgun' is the real transport)
+  MAIL_DRIVER: Joi.string().valid('console', 'mailgun').default('console'),
+
   // Mailgun
   MAILGUN_API_KEY: Joi.string().optional(),
   MAILGUN_DOMAIN: Joi.string().optional(),
   MAILGUN_FROM_NAME: Joi.string().default('StartMessaging'),
   MAILGUN_FROM_EMAIL: Joi.string().optional(),
   MAILGUN_REPLY_TO_EMAIL: Joi.string().email().optional(),
-  
+
   // Custom testing
   MOCK_SMS_SEND: Joi.boolean().default(false),
 });

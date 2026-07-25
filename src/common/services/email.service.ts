@@ -39,9 +39,15 @@ export class EmailService {
   }
 
   async sendEmail(to: string, subject: string, html: string): Promise<boolean> {
-    if (!this.apiKey || !this.domain) {
-      this.logger.warn('Mailgun is not configured. Email not sent.');
-      return false;
+    // Dev/test transport: print the email to the server log instead of sending
+    // it. Selected by MAIL_DRIVER=console (the default) or whenever Mailgun is
+    // unconfigured, so email flows are testable locally without credentials.
+    const mailDriver = this.config.get<string>('mail.driver') ?? 'console';
+    if (mailDriver === 'console' || !this.apiKey || !this.domain) {
+      this.logger.log(
+        `\n──────── CONSOLE EMAIL ────────\n  to:      ${to}\n  subject: ${subject}\n  ${this.toText(html)}\n───────────────────────────────`,
+      );
+      return true;
     }
 
     try {
@@ -133,9 +139,12 @@ export class EmailService {
   async sendLowBalanceAlertEmail(
     email: string,
     displayName: string,
-    balance: number,
-    threshold: number,
+    balanceMicros: number,
+    thresholdMicros: number,
   ) {
+    // Balances/thresholds are stored in micros; format as major-unit rupees.
+    const balance = balanceMicros / 1_000_000;
+    const threshold = thresholdMicros / 1_000_000;
     const subject = `Low wallet balance alert (below ₹${threshold})`;
     const html = this.wrapEmail({
       title: `Hi ${displayName}, your wallet balance is low`,

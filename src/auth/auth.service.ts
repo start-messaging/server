@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { UsersService } from '../users/users.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
+import { ReferralService } from '../referral/referral.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { GoogleAuthDto } from './dto/google-auth.dto.js';
@@ -30,6 +31,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly walletService: WalletService,
+    private readonly referralService: ReferralService,
   ) {
     const googleClientId = this.configService.get<string>('google.clientId');
     this.googleClient = googleClientId
@@ -69,9 +71,15 @@ export class AuthService {
       country: dto.country ?? null,
     });
 
+    // Attribute the signup to a referral partner if a valid code was supplied.
+    if (dto.referralCode) {
+      await this.referralService.attributeReferral(user.id, dto.referralCode);
+    }
+
+    // ₹10 welcome credit (money is stored in micros).
     await this.walletService.credit(
       user.id,
-      10,
+      10_000_000,
       'Welcome credit',
       'registration',
       user.id,
@@ -163,9 +171,14 @@ export class AuthService {
       country: dto.country ?? null,
     });
 
+    if (dto.referralCode) {
+      await this.referralService.attributeReferral(user.id, dto.referralCode);
+    }
+
+    // ₹10 welcome credit (money is stored in micros).
     await this.walletService.credit(
       user.id,
-      10,
+      10_000_000,
       'Welcome credit',
       'registration',
       user.id,
@@ -229,7 +242,7 @@ export class AuthService {
 
     const refreshToken = randomBytes(32).toString('hex');
     const refreshTokenHash = this.hashToken(refreshToken);
-    
+
     await Promise.all([
       this.usersService.updateRefreshTokenHash(user.id, refreshTokenHash),
       this.usersService.updateLastLogin(user.id, ip),

@@ -4,14 +4,21 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
-import { Payment, PaymentStatus } from './entities/payment.entity.js';
+import {
+  FeeBearer,
+  Payment,
+  PaymentStatus,
+} from './entities/payment.entity.js';
 import { PaymentGatewayFactory } from './gateways/payment-gateway.factory.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { VerifyPaymentDto } from './dto/verify-payment.dto.js';
+import { computeConvenienceFee, microsToPaise } from './fee.util.js';
+import { ReferralService } from '../referral/referral.service.js';
 
 @Injectable()
 export class PaymentsService {
@@ -23,27 +30,47 @@ export class PaymentsService {
     private readonly gatewayFactory: PaymentGatewayFactory,
     private readonly walletService: WalletService,
     private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
+    private readonly referralService: ReferralService,
   ) {}
 
   async createOrder(userId: string, dto: CreateOrderDto) {
     const wallet = await this.walletService.getWallet(userId);
     const currency = wallet.currency;
 
+    const bearer = this.config.get<string>('payments.fee.bearer') ?? 'customer';
+    const fee = computeConvenienceFee(dto.amountMicros, {
+      feePercent: this.config.get<number>('payments.fee.percent') ?? 2,
+      gstPercent: this.config.get<number>('payments.fee.gstPercent') ?? 18,
+      bearer,
+    });
+
     const gateway = this.gatewayFactory.getForCurrency(currency);
     const idempotencyKey = randomUUID();
 
+    // The gateway charges the grossed-up total; only the base is credited later.
     const result = await gateway.createOrder({
-      amount: dto.amount,
+      amount: fee.totalMicros,
       currency,
       userId,
       idempotencyKey,
+      notes: {
+        baseMicros: fee.baseMicros,
+        convenienceFeeMicros: fee.convenienceFeeMicros,
+        gstMicros: fee.gstMicros,
+      },
     });
 
     const payment = this.paymentRepository.create({
       userId,
       gateway: gateway.name,
       gatewayOrderId: result.gatewayOrderId,
-      amount: dto.amount,
+      amount: fee.baseMicros,
+      convenienceFee: fee.convenienceFeeMicros,
+      gst: fee.gstMicros,
+      totalAmount: fee.totalMicros,
+      feeBearer:
+        bearer === 'platform' ? FeeBearer.PLATFORM : FeeBearer.CUSTOMER,
       currency,
       idempotencyKey,
       metadata: result.gatewayData,
@@ -54,7 +81,11 @@ export class PaymentsService {
     return {
       paymentId: payment.id,
       gatewayOrderId: result.gatewayOrderId,
-      amount: dto.amount,
+      baseAmountMicros: fee.baseMicros,
+      convenienceFeeMicros: fee.convenienceFeeMicros,
+      gstMicros: fee.gstMicros,
+      totalAmountMicros: fee.totalMicros,
+      gatewayAmount: microsToPaise(fee.totalMicros),
       currency,
       gatewayKey: gateway.getPublicKey(),
     };
@@ -143,6 +174,14 @@ export class PaymentsService {
         manager,
       );
 
+      // Accrue affiliate commission for the referring partner (idempotent).
+      await this.referralService.recordCommissionForPayment(
+        manager,
+        payment.userId,
+        payment.id,
+        Number(payment.amount),
+      );
+
       return {
         status: 'completed',
         message: 'Payment verified and wallet credited',
@@ -197,6 +236,14 @@ export class PaymentsService {
           'payment',
           payment.id,
           manager,
+        );
+
+        // Accrue affiliate commission for the referring partner (idempotent).
+        await this.referralService.recordCommissionForPayment(
+          manager,
+          payment.userId,
+          payment.id,
+          Number(payment.amount),
         );
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;

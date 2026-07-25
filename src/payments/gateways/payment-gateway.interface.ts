@@ -1,8 +1,11 @@
 export interface CreateOrderParams {
+  /** Amount to CHARGE the user, in integer micros (base + fee + gst). */
   amount: number;
   currency: string;
   userId: string;
   idempotencyKey: string;
+  /** Audit metadata attached to the gateway order (fee breakdown, etc.). */
+  notes?: Record<string, string | number>;
 }
 
 export interface CreateOrderResult {

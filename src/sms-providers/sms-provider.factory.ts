@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwoFactorProvider } from './providers/two-factor.provider.js';
+import { ConsoleSmsProvider } from './providers/console.provider.js';
 import {
   DlrResult,
   SendSmsParams,
@@ -12,33 +13,27 @@ import {
 export class SmsProviderFactory {
   private readonly providers: SmsProvider[];
   private readonly logger = new Logger(SmsProviderFactory.name);
-  private readonly isMock: boolean;
 
   constructor(
     twoFactor: TwoFactorProvider,
+    private readonly consoleProvider: ConsoleSmsProvider,
     private readonly config: ConfigService,
   ) {
-    this.providers = [twoFactor].sort((a, b) => a.priority - b.priority);
-    this.isMock = this.config.get<boolean>('MOCK_SMS_SEND') === true;
+    // Console provider is registered so DLR lookups by stored provider name
+    // ('console') resolve; it only reports healthy when the console driver is on.
+    this.providers = [twoFactor, consoleProvider].sort(
+      (a, b) => a.priority - b.priority,
+    );
+  }
+
+  private get isConsole(): boolean {
+    return this.consoleProvider.isEnabled();
   }
 
   async getDeliveryStatus(
     providerName: string,
     providerMsgId: string,
   ): Promise<DlrResult> {
-    if (this.isMock && providerName === 'mock') {
-      return {
-        status: 'delivered',
-        description: 'Simulated delivery for mock provider',
-        deliveredAt: new Date(),
-        senderId: 'MOCK',
-        smsLanguage: 'english',
-        characterCount: 50,
-        smsCount: 1,
-        providerCost: 0,
-      };
-    }
-
     const provider = this.providers.find((p) => p.name === providerName);
     if (!provider) {
       this.logger.warn(`Provider "${providerName}" not found for DLR check`);
@@ -50,24 +45,9 @@ export class SmsProviderFactory {
   async send(
     params: SendSmsParams,
   ): Promise<SendSmsResult & { provider: string }> {
-    if (this.isMock) {
-      if (params.content.includes('000000')) {
-        this.logger.warn(`[MOCK SMS] Simulating failure for content: ${params.content}`);
-        return {
-          provider: 'mock',
-          providerMsgId: '',
-          status: 'failed',
-          failureReason: 'Simulated failure for testing',
-        };
-      }
-      this.logger.log(
-        `[MOCK SMS] To: ${params.to}, Content: ${params.content}`,
-      );
-      return {
-        provider: 'mock',
-        providerMsgId: `mock_${Date.now()}`,
-        status: 'sent',
-      };
+    if (this.isConsole) {
+      const result = await this.consoleProvider.sendSms(params);
+      return { ...result, provider: this.consoleProvider.name };
     }
 
     const healthyProviders: SmsProvider[] = [];

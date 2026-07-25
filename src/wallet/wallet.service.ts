@@ -245,13 +245,14 @@ export class WalletService {
     before: number,
     after: number,
   ): number | null {
-    // Adjacent band crossing checks:
+    // Balances are integer micros. Adjacent band crossing checks (₹5/₹3/₹1):
     // >5 -> (<5 and >3): send <5 alert
     // >3 -> (<3 and >1): send <3 alert
     // >1 -> (<1): send <1 alert
-    if (before > 5 && after < 5 && after > 3) return 5;
-    if (before > 3 && after < 3 && after > 1) return 3;
-    if (before > 1 && after < 1) return 1;
+    const M = 1_000_000;
+    if (before > 5 * M && after < 5 * M && after > 3 * M) return 5 * M;
+    if (before > 3 * M && after < 3 * M && after > 1 * M) return 3 * M;
+    if (before > 1 * M && after < 1 * M) return 1 * M;
     return null;
   }
 
