@@ -6,10 +6,24 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Channel } from './entities/channel.entity.js';
 import { OtpTemplate } from './entities/otp-template.entity.js';
 import { TemplateStatus } from './enums/template-status.enum.js';
+import {
+  applySort,
+  paginateQueryBuilder,
+  resolveSort,
+  SortWhitelist,
+} from '../common/utils/pagination.util.js';
+
+/** Sort keys the admin template list may order by. */
+const TEMPLATE_SORT_WHITELIST: SortWhitelist = {
+  created_at: 'template.createdAt',
+  updated_at: 'template.updatedAt',
+  name: 'template.name',
+  status: 'template.status',
+};
 
 const SYSTEM_TEMPLATES = [
   {
@@ -109,18 +123,49 @@ export class ChannelsService implements OnModuleInit {
     search?: string;
     sortBy?: string;
     sortOrder?: 'ASC' | 'DESC';
+    shouldCount?: boolean;
   }): Promise<[OtpTemplate[], number]> {
-    const where: any = {};
-    if (query.channelId) where.channelId = query.channelId;
-    if (query.status) where.status = query.status;
-    if (query.search) where.name = ILike(`%${query.search}%`);
+    const qb = this.templateRepository
+      .createQueryBuilder('template')
+      .leftJoinAndSelect('template.channel', 'channel');
 
-    return this.templateRepository.findAndCount({
-      where,
-      relations: ['channel'],
-      order: { [query.sortBy || 'createdAt']: query.sortOrder || 'DESC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
+    if (query.channelId) {
+      qb.andWhere('template.channelId = :channelId', {
+        channelId: query.channelId,
+      });
+    }
+    if (query.status) {
+      qb.andWhere('template.status = :status', { status: query.status });
+    }
+
+    const term = query.search?.trim();
+    if (term) {
+      qb.andWhere(
+        '(template.name ILIKE :search OR template.body ILIKE :search)',
+        {
+          search: `%${term}%`,
+        },
+      );
+    }
+
+    // Previously `order: { [query.sortBy || 'createdAt']: ... }` fed the raw
+    // query-string value straight into ORDER BY, so any unknown key threw a
+    // 500. Resolving through a whitelist keeps only known columns reachable.
+    applySort(
+      qb,
+      resolveSort(
+        query.sortBy,
+        TEMPLATE_SORT_WHITELIST,
+        'created_at',
+        query.sortOrder,
+      ),
+    );
+    qb.addOrderBy('template.id', 'DESC');
+
+    return paginateQueryBuilder(qb, {
+      page: query.page,
+      limit: query.limit,
+      withCount: query.shouldCount,
     });
   }
 

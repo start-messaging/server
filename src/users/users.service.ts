@@ -14,6 +14,35 @@ import { UpdateUserDto } from './dto/update-user.dto.js';
 import { SubmitKycDto } from './dto/submit-kyc.dto.js';
 import { KycStatus } from './enums/kyc-status.enum.js';
 import { EmailService } from '../common/services/email.service.js';
+import { istDayStart } from '../common/utils/date.util.js';
+import {
+  applySort,
+  paginateQueryBuilder,
+  resolveSort,
+  SortWhitelist,
+} from '../common/utils/pagination.util.js';
+import { USER_SEARCH_EXPRESSION } from './constants/user-search.constant.js';
+
+/** Sort keys the admin user list may order by. */
+const USER_SORT_WHITELIST: SortWhitelist = {
+  created_at: 'user.createdAt',
+  name: ['user.firstName', 'user.lastName'],
+  email: 'user.email',
+  last_called: 'user.adminLastCalledAt',
+  last_login: 'user.lastLoginAt',
+  kyc_status: 'user.kycStatus',
+  role: 'user.role',
+};
+
+/** Sort keys the KYC review queue may order by. */
+const KYC_SORT_WHITELIST: SortWhitelist = {
+  submitted_at: 'user.kycSubmittedAt',
+  reviewed_at: 'user.kycReviewedAt',
+  created_at: 'user.createdAt',
+  name: ['user.firstName', 'user.lastName'],
+  email: 'user.email',
+  business_name: 'user.businessName',
+};
 
 @Injectable()
 export class UsersService {
@@ -93,78 +122,46 @@ export class UsersService {
     kycStatus?: KycStatus,
     sortBy?: string,
     sortOrder?: 'asc' | 'desc',
+    withCount = true,
   ): Promise<[User[], number]> {
-    let qb = this.usersRepository
+    const qb = this.usersRepository
       .createQueryBuilder('user')
       .addSelect(['user.adminLastCalledAt', 'user.adminCallNotes']);
 
     const term = search?.trim();
     if (term) {
-      const q = `%${term}%`;
-      qb = qb.andWhere(
-        `(
-          user.firstName ILIKE :search OR user.lastName ILIKE :search OR
-          CONCAT(COALESCE(user.firstName, ''), ' ', COALESCE(user.lastName, '')) ILIKE :search OR
-          user.email ILIKE :search OR user.mobileNumber ILIKE :search OR
-          user.businessName ILIKE :search OR user.companyName ILIKE :search OR
-          user.websiteUrl ILIKE :search OR user.pan ILIKE :search OR user.gstin ILIKE :search
-        )`,
-        { search: q },
-      );
+      // Match against the same concatenated expression that
+      // IDX_users_search_trgm indexes, so this stays an index scan instead of
+      // ORing ten separate ILIKEs into a guaranteed sequential scan.
+      qb.andWhere(`${USER_SEARCH_EXPRESSION} ILIKE :search`, {
+        search: `%${term}%`,
+      });
     }
 
-    if (accountStatus) {
-      if (accountStatus === 'active') {
-        qb = qb.andWhere('user.isActive = true');
-      } else if (accountStatus === 'suspended') {
-        qb = qb.andWhere('user.isActive = false');
-      }
+    if (accountStatus === 'active') {
+      qb.andWhere('user.isActive = true');
+    } else if (accountStatus === 'suspended') {
+      qb.andWhere('user.isActive = false');
     }
 
     if (kycStatus !== undefined && kycStatus !== null) {
-      qb = qb.andWhere('user.kycStatus = :kycStatus', { kycStatus });
+      qb.andWhere('user.kycStatus = :kycStatus', { kycStatus });
     }
 
-    const dir = sortOrder === 'asc' ? 'ASC' : 'DESC';
-    const field = sortBy ?? 'created_at';
+    applySort(
+      qb,
+      resolveSort(sortBy, USER_SORT_WHITELIST, 'created_at', sortOrder),
+    );
+    // Tie-breaker: without a unique trailing key, rows sharing a sort value
+    // can reorder between page requests and get skipped or duplicated.
+    qb.addOrderBy('user.id', 'DESC');
 
-    switch (field) {
-      case 'name':
-        qb = qb.orderBy('user.firstName', dir).addOrderBy('user.lastName', dir);
-        break;
-      case 'email':
-        qb = qb.orderBy('user.email', dir);
-        break;
-      case 'last_called':
-        qb = qb.orderBy(
-          'user.adminLastCalledAt',
-          dir,
-          dir === 'DESC' ? 'NULLS LAST' : 'NULLS FIRST',
-        );
-        break;
-      case 'last_login':
-        qb = qb.orderBy(
-          'user.lastLoginAt',
-          dir,
-          dir === 'DESC' ? 'NULLS LAST' : 'NULLS FIRST',
-        );
-        break;
-      case 'kyc_status':
-        qb = qb.orderBy('user.kycStatus', dir);
-        break;
-      case 'role':
-        qb = qb.orderBy('user.role', dir);
-        break;
-      case 'created_at':
-      default:
-        qb = qb.orderBy('user.createdAt', dir);
-        break;
-    }
+    return paginateQueryBuilder(qb, { page, limit, withCount });
+  }
 
-    return qb
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+  /** Total user count for admin dashboards. */
+  async countAll(): Promise<number> {
+    return this.usersRepository.count();
   }
 
   async setActive(id: string, isActive: boolean): Promise<User> {
@@ -272,29 +269,34 @@ export class UsersService {
     page: number,
     limit: number,
     search?: string,
+    sortBy?: string,
+    sortOrder?: 'asc' | 'desc',
+    withCount = true,
   ): Promise<[User[], number]> {
-    let qb = this.usersRepository.createQueryBuilder('user');
+    const qb = this.usersRepository.createQueryBuilder('user');
 
     if (status) {
-      qb = qb.andWhere('user.kycStatus = :status', { status });
+      qb.andWhere('user.kycStatus = :status', { status });
     } else {
-      qb = qb.andWhere('user.kycStatus != :notSubmitted', {
+      qb.andWhere('user.kycStatus != :notSubmitted', {
         notSubmitted: KycStatus.NOT_SUBMITTED,
       });
     }
 
-    if (search) {
-      qb = qb.andWhere(
-        '(user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.mobileNumber ILIKE :search OR user.businessName ILIKE :search)',
-        { search: `%${search}%` },
-      );
+    const term = search?.trim();
+    if (term) {
+      qb.andWhere(`${USER_SEARCH_EXPRESSION} ILIKE :search`, {
+        search: `%${term}%`,
+      });
     }
 
-    return qb
-      .orderBy('user.kycSubmittedAt', 'DESC', 'NULLS LAST')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    applySort(
+      qb,
+      resolveSort(sortBy, KYC_SORT_WHITELIST, 'submitted_at', sortOrder),
+    );
+    qb.addOrderBy('user.id', 'DESC');
+
+    return paginateQueryBuilder(qb, { page, limit, withCount });
   }
 
   async reviewKyc(
@@ -517,9 +519,12 @@ export class UsersService {
   }
 
   async getDashboardStats() {
-    const now = new Date();
-    const todayStart = new Date(now.setHours(0, 0, 0, 0));
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // IST day boundaries, matching how message and revenue stats are bucketed.
+    // Using the server's local midnight here instead made "new users today"
+    // count from a different instant than "messages today" on any host not
+    // running in IST.
+    const todayStart = istDayStart();
+    const sevenDaysAgo = istDayStart(7);
 
     const [newToday, newThisWeek] = await Promise.all([
       this.usersRepository.count({

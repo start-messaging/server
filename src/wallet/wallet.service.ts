@@ -10,6 +10,39 @@ import {
 import { ErrorCodes } from '../common/constants/error-codes.constant.js';
 import { User } from '../users/entities/user.entity.js';
 import { EmailService } from '../common/services/email.service.js';
+import {
+  applySort,
+  paginateQueryBuilder,
+  resolveSort,
+  SortWhitelist,
+} from '../common/utils/pagination.util.js';
+import { COUNT_SKIPPED } from '../common/constants/pagination.constants.js';
+
+/** Sort keys the transaction lists may order by. */
+const TRANSACTION_SORT_WHITELIST: SortWhitelist = {
+  created_at: 'transaction.createdAt',
+  amount: 'transaction.amount',
+  type: 'transaction.type',
+  balance_after: 'transaction.balanceAfter',
+};
+
+export interface TransactionFilters {
+  type?: WalletTransactionType;
+  startDate?: string;
+  endDate?: string;
+  referenceType?: string;
+  search?: string;
+}
+
+/** Everything a transaction list query needs, in one object. */
+export interface TransactionQuery extends TransactionFilters {
+  page: number;
+  limit: number;
+  sortBy?: string;
+  sortOrder?: string;
+  /** Defaults to true. */
+  withCount?: boolean;
+}
 
 export class InsufficientBalanceError extends Error {
   code = ErrorCodes.INSUFFICIENT_BALANCE;
@@ -255,52 +288,92 @@ export class WalletService {
     return null;
   }
 
-  async getTransactionsAdmin(
-    userId: string,
-    page: number,
-    limit: number,
-  ): Promise<[WalletTransaction[], number]> {
-    const wallet = await this.getWallet(userId);
-    return this.transactionRepository.findAndCount({
-      where: { walletId: wallet.id },
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
+  /**
+   * Resolves a user's wallet id without creating one.
+   *
+   * `getWallet` inserts a wallet when none exists, which is right on the
+   * write paths but wrong on a read: listing transactions should not have the
+   * side effect of writing a row, and doing so makes GET requests fail against
+   * a read replica or a read-only transaction.
+   */
+  private async findWalletId(userId: string): Promise<string | null> {
+    const wallet = await this.walletRepository.findOne({
+      where: { userId },
+      select: { id: true },
     });
+    return wallet?.id ?? null;
   }
 
+  /** Admin view of a customer's wallet history. Same query shape. */
+  async getTransactionsAdmin(
+    userId: string,
+    query: TransactionQuery,
+  ): Promise<[WalletTransaction[], number]> {
+    return this.queryTransactions(userId, query);
+  }
+
+  /**
+   * Customer-facing wallet history.
+   *
+   * Takes a single options object rather than a positional parameter list.
+   * The earlier positional form silently dropped filters: adding `search` to
+   * the DTO without threading it through nine positional arguments meant the
+   * endpoint accepted the parameter, validated it, and then ignored it —
+   * returning every row as if it had matched.
+   */
   async getTransactions(
     userId: string,
-    page: number,
-    limit: number,
-    type?: WalletTransactionType,
-    startDate?: string,
-    endDate?: string,
+    query: TransactionQuery,
   ): Promise<[WalletTransaction[], number]> {
-    const wallet = await this.getWallet(userId);
-    const queryBuilder = this.transactionRepository
+    return this.queryTransactions(userId, query);
+  }
+
+  private async queryTransactions(
+    userId: string,
+    query: TransactionQuery,
+  ): Promise<[WalletTransaction[], number]> {
+    const { page, limit, sortBy, sortOrder, withCount = true, ...filters } =
+      query;
+
+    const walletId = await this.findWalletId(userId);
+    // No wallet yet means no transactions — an empty page, not an error.
+    if (!walletId) return [[], withCount ? 0 : COUNT_SKIPPED];
+
+    const qb = this.transactionRepository
       .createQueryBuilder('transaction')
-      .where('transaction.walletId = :walletId', { walletId: wallet.id });
+      .where('transaction.walletId = :walletId', { walletId });
 
-    if (type) {
-      queryBuilder.andWhere('transaction.type = :type', { type });
+    if (filters.type) {
+      qb.andWhere('transaction.type = :type', { type: filters.type });
     }
-
-    if (startDate) {
-      queryBuilder.andWhere('transaction.createdAt >= :startDate', {
-        startDate,
+    if (filters.startDate) {
+      qb.andWhere('transaction.createdAt >= :startDate', {
+        startDate: new Date(filters.startDate),
+      });
+    }
+    if (filters.endDate) {
+      qb.andWhere('transaction.createdAt <= :endDate', {
+        endDate: new Date(filters.endDate),
+      });
+    }
+    if (filters.referenceType) {
+      qb.andWhere('transaction.referenceType = :referenceType', {
+        referenceType: filters.referenceType,
+      });
+    }
+    if (filters.search?.trim()) {
+      qb.andWhere('transaction.description ILIKE :search', {
+        search: `%${filters.search.trim()}%`,
       });
     }
 
-    if (endDate) {
-      queryBuilder.andWhere('transaction.createdAt <= :endDate', { endDate });
-    }
+    applySort(
+      qb,
+      resolveSort(sortBy, TRANSACTION_SORT_WHITELIST, 'created_at', sortOrder),
+    );
+    qb.addOrderBy('transaction.id', 'DESC');
 
-    return queryBuilder
-      .orderBy('transaction.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    return paginateQueryBuilder(qb, { page, limit, withCount });
   }
 
   async getAdminAnalytics() {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwoFactorProvider } from './providers/two-factor.provider.js';
+import { ConsoleProvider } from './providers/console.provider.js';
 import {
   DlrResult,
   SendSmsParams,
@@ -16,9 +17,15 @@ export class SmsProviderFactory {
 
   constructor(
     twoFactor: TwoFactorProvider,
+    consoleProvider: ConsoleProvider,
     private readonly config: ConfigService,
   ) {
-    this.providers = [twoFactor].sort((a, b) => a.priority - b.priority);
+    // Sorted by priority, so the console provider (99) is only ever reached
+    // when no real provider is healthy. It reports unhealthy unless explicitly
+    // enabled, so this ordering is a no-op wherever it is switched off.
+    this.providers = [twoFactor, consoleProvider].sort(
+      (a, b) => a.priority - b.priority,
+    );
     this.isMock = this.config.get<boolean>('MOCK_SMS_SEND') === true;
   }
 
@@ -52,7 +59,9 @@ export class SmsProviderFactory {
   ): Promise<SendSmsResult & { provider: string }> {
     if (this.isMock) {
       if (params.content.includes('000000')) {
-        this.logger.warn(`[MOCK SMS] Simulating failure for content: ${params.content}`);
+        this.logger.warn(
+          `[MOCK SMS] Simulating failure for content: ${params.content}`,
+        );
         return {
           provider: 'mock',
           providerMsgId: '',

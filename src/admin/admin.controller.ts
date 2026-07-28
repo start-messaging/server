@@ -3,7 +3,6 @@ import {
   Controller,
   Delete,
   Get,
-  InternalServerErrorException,
   NotFoundException,
   Param,
   Patch,
@@ -11,7 +10,6 @@ import {
   Query,
   Res,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import type { Readable } from 'stream';
@@ -32,6 +30,8 @@ import { AdminUpdateUserDto } from './dto/admin-update-user.dto.js';
 import { ReviewKycDto } from './dto/review-kyc.dto.js';
 import { KycFilterQueryDto } from './dto/kyc-filter-query.dto.js';
 import { AdminMessageQueryDto } from './dto/admin-message-query.dto.js';
+import { AdminTransactionQueryDto } from './dto/admin-transaction-query.dto.js';
+import { DailyUsageQueryDto } from './dto/daily-usage-query.dto.js';
 import { CreateTemplateDto } from './dto/create-template.dto.js';
 import { UpdateTemplateDto } from './dto/update-template.dto.js';
 import { TemplateFilterQueryDto } from './dto/template-filter-query.dto.js';
@@ -46,7 +46,6 @@ export class AdminController {
     private readonly usersService: UsersService,
     private readonly messagesService: MessagesService,
     private readonly r2UploadService: R2UploadService,
-    private readonly configService: ConfigService,
     private readonly channelsService: ChannelsService,
     private readonly walletService: WalletService,
     private readonly apiKeysService: ApiKeysService,
@@ -67,6 +66,7 @@ export class AdminController {
       query.kycStatus,
       query.sortBy,
       query.sortOrder,
+      query.shouldCount,
     );
     const balances = await this.walletService.getBalancesByUserIds(
       items.map((u) => u.id),
@@ -100,6 +100,9 @@ export class AdminController {
       query.page,
       query.limit,
       query.search,
+      query.sortBy,
+      query.sortOrder as 'asc' | 'desc' | undefined,
+      query.shouldCount,
     );
     const sanitized = items.map(excludePassword);
     return paginatedResponse(sanitized, total, query.page, query.limit);
@@ -157,7 +160,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin dashboard stats' })
   async getDashboard() {
     const [
-      [, totalUsers],
+      totalUsers,
       activeUsers,
       userStats,
       messageStats,
@@ -167,7 +170,9 @@ export class AdminController {
       pendingKycCount,
       razorpayStats,
     ] = await Promise.all([
-      this.usersService.findAll(1, 1),
+      // Was `findAll(1, 1)`, which built the full filtered user query and
+      // hydrated a throwaway User entity just to read the count off the tuple.
+      this.usersService.countAll(),
       this.usersService.countActive(),
       this.usersService.getDashboardStats(),
       this.messagesService.getAdminDashboardStats(),
@@ -207,37 +212,18 @@ export class AdminController {
   }
 
   @Get('dashboard/daily-usage')
-  @ApiOperation({ summary: 'Daily usage per user for a specific date' })
-  async getDailyUsage(@Query('date') dateParam?: string) {
-    return this.messagesService.getAdminDailyUsage(dateParam);
-  }
-
-  // SMS provider wallet
-  @Get('sms-wallet')
-  @ApiOperation({ summary: 'Get Fast2SMS wallet balance' })
-  async getSmsWallet() {
-    const apiKey = this.configService.get<string>('sms.fast2sms.apiKey');
-    if (!apiKey) {
-      throw new InternalServerErrorException(
-        'Fast2SMS API key is not configured',
-      );
-    }
-
-    const res = await fetch(
-      `https://www.fast2sms.com/dev/wallet?authorization=${encodeURIComponent(apiKey)}`,
+  @ApiOperation({
+    summary: 'Daily usage per user for a specific date (paginated, searchable)',
+  })
+  async getDailyUsage(@Query() query: DailyUsageQueryDto) {
+    const [items, total] = await this.messagesService.getAdminDailyUsage(
+      query.date,
+      query.page,
+      query.limit,
+      query.search,
+      query.shouldCount,
     );
-    const data = await res.json();
-
-    if (!data.return) {
-      throw new InternalServerErrorException(
-        'Failed to fetch SMS wallet balance',
-      );
-    }
-
-    return {
-      balance: data.wallet,
-      smsCount: data.sms_count,
-    };
+    return paginatedResponse(items, total, query.page, query.limit);
   }
 
   // Customer detail
@@ -272,32 +258,60 @@ export class AdminController {
       userId,
       query.page,
       query.limit,
-      query.startDate,
-      query.endDate,
-      query.status,
-      query.phoneNumber,
+      {
+        startDate: query.startDate,
+        endDate: query.endDate,
+        status: query.status,
+        phoneNumber: query.phoneNumber,
+        apiKeyId: query.apiKeyId,
+        provider: query.provider,
+      },
+      query.sortBy,
+      query.sortOrder,
+      query.shouldCount,
     );
     return paginatedResponse(items, total, query.page, query.limit);
   }
 
   @Get('users/:userId/transactions')
-  @ApiOperation({ summary: 'Wallet transactions for a user (all types)' })
+  @ApiOperation({
+    summary: 'Wallet transactions for a user (paginated, filterable, sortable)',
+  })
   async getUserTransactions(
     @Param('userId') userId: string,
-    @Query() query: PaginationQueryDto,
+    @Query() query: AdminTransactionQueryDto,
   ) {
     const [items, total] = await this.walletService.getTransactionsAdmin(
       userId,
-      query.page,
-      query.limit,
+      {
+        page: query.page,
+        limit: query.limit,
+        type: query.type,
+        startDate: query.startDate,
+        endDate: query.endDate,
+        referenceType: query.referenceType,
+        search: query.search,
+        sortBy: query.sortBy,
+        sortOrder: query.sortOrder,
+        withCount: query.shouldCount,
+      },
     );
     return paginatedResponse(items, total, query.page, query.limit);
   }
 
   @Get('users/:userId/api-keys')
-  @ApiOperation({ summary: 'List all API keys for a user (admin)' })
-  async getUserApiKeys(@Param('userId') userId: string) {
-    return this.apiKeysService.findAllByUser(userId);
+  @ApiOperation({ summary: 'List API keys for a user (admin, paginated)' })
+  async getUserApiKeys(
+    @Param('userId') userId: string,
+    @Query() query: PaginationQueryDto,
+  ) {
+    const [items, total] = await this.apiKeysService.findByUserPaginated(
+      userId,
+      query.page,
+      query.limit,
+      query.shouldCount,
+    );
+    return paginatedResponse(items, total, query.page, query.limit);
   }
 
   // Template management

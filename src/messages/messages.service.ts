@@ -6,10 +6,55 @@ import {
   EntityManager,
   FindOptionsWhere,
   Repository,
+  SelectQueryBuilder,
 } from 'typeorm';
 import { Message, MessageStatus } from './entities/message.entity.js';
 import { SmsProviderFactory } from '../sms-providers/sms-provider.factory.js';
 import { WalletService } from '../wallet/wallet.service.js';
+import {
+  applySort,
+  paginateQueryBuilder,
+  resolveSort,
+  SortWhitelist,
+} from '../common/utils/pagination.util.js';
+import { paginateByCursor } from '../common/utils/cursor.util.js';
+import { COUNT_SKIPPED } from '../common/constants/pagination.constants.js';
+import { USER_SEARCH_EXPRESSION } from '../users/constants/user-search.constant.js';
+
+export interface DailyUsageRow {
+  user: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    businessName: string | null;
+  };
+  totalMessages: number;
+  deliveredCount: number;
+  failedCount: number;
+  totalSpent: number;
+}
+
+/** Sort keys the message lists may order by. */
+const MESSAGE_SORT_WHITELIST: SortWhitelist = {
+  created_at: 'm.createdAt',
+  sent_at: 'm.sentAt',
+  delivered_at: 'm.deliveredAt',
+  status: 'm.status',
+  cost: 'm.costAmount',
+};
+
+export interface MessageFilters {
+  startDate?: string;
+  endDate?: string;
+  status?: MessageStatus | string;
+  apiKeyId?: string;
+}
+
+export interface AdminMessageFilters extends MessageFilters {
+  phoneNumber?: string;
+  provider?: string;
+}
 
 @Injectable()
 export class MessagesService {
@@ -166,40 +211,81 @@ export class MessagesService {
     'updatedAt',
   ];
 
+  /** Shared filter application so offset and cursor paths cannot diverge. */
+  private applyCustomerFilters(
+    qb: SelectQueryBuilder<Message>,
+    userId: string,
+    filters: MessageFilters,
+  ): SelectQueryBuilder<Message> {
+    qb.where('m.userId = :userId', { userId });
+
+    if (filters.startDate) {
+      qb.andWhere('m.createdAt >= :startDate', {
+        startDate: new Date(filters.startDate),
+      });
+    }
+    if (filters.endDate) {
+      qb.andWhere('m.createdAt <= :endDate', {
+        endDate: new Date(filters.endDate),
+      });
+    }
+    if (filters.status) {
+      qb.andWhere('m.status = :status', { status: filters.status });
+    }
+    if (filters.apiKeyId) {
+      qb.andWhere('m.apiKeyId = :apiKeyId', { apiKeyId: filters.apiKeyId });
+    }
+
+    return qb;
+  }
+
   async findByUser(
     userId: string,
     page: number,
     limit: number,
-    startDate?: string,
-    endDate?: string,
-    status?: string,
-    apiKeyId?: string,
+    filters: MessageFilters = {},
+    sortBy?: string,
+    sortOrder?: string,
+    withCount = true,
   ): Promise<[Message[], number]> {
     const qb = this.messageRepository
       .createQueryBuilder('m')
-      .select(this.customerFields.map((f) => `m.${f}`))
-      .where('m.userId = :userId', { userId });
+      .select(this.customerFields.map((f) => `m.${f}`));
 
-    if (startDate) {
-      qb.andWhere('m.createdAt >= :startDate', {
-        startDate: new Date(startDate),
-      });
-    }
-    if (endDate) {
-      qb.andWhere('m.createdAt <= :endDate', { endDate: new Date(endDate) });
-    }
-    if (status) {
-      qb.andWhere('m.status = :status', { status });
-    }
-    if (apiKeyId) {
-      qb.andWhere('m.apiKeyId = :apiKeyId', { apiKeyId });
-    }
+    this.applyCustomerFilters(qb, userId, filters);
 
-    return qb
-      .orderBy('m.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    applySort(
+      qb,
+      resolveSort(sortBy, MESSAGE_SORT_WHITELIST, 'created_at', sortOrder),
+    );
+    // createdAt is not unique. Without a unique tie-breaker, rows written in
+    // the same millisecond can swap places between two page requests, which
+    // makes a row appear twice or not at all while paging.
+    qb.addOrderBy('m.id', 'DESC');
+
+    return paginateQueryBuilder(qb, { page, limit, withCount });
+  }
+
+  /**
+   * Keyset-paginated message list.
+   *
+   * Offset pagination has to walk past every earlier row, so exporting a large
+   * history gets progressively slower page by page. This stays flat, and is
+   * stable while new messages are being written.
+   */
+  async findByUserCursor(
+    userId: string,
+    limit: number,
+    cursor?: string,
+    filters: MessageFilters = {},
+  ) {
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .select(this.customerFields.map((f) => `m.${f}`));
+
+    this.applyCustomerFilters(qb, userId, filters);
+
+    return paginateByCursor(qb, 'm', limit, cursor);
   }
 
   async findById(id: string, userId?: string): Promise<Message | null> {
@@ -293,37 +379,49 @@ export class MessagesService {
     userId: string,
     page: number,
     limit: number,
-    startDate?: string,
-    endDate?: string,
-    status?: MessageStatus,
-    phoneNumber?: string,
+    filters: AdminMessageFilters = {},
+    sortBy?: string,
+    sortOrder?: string,
+    withCount = true,
   ): Promise<[Message[], number]> {
     const qb = this.messageRepository
       .createQueryBuilder('m')
       .where('m.userId = :userId', { userId });
 
-    if (startDate) {
+    if (filters.startDate) {
       qb.andWhere('m.createdAt >= :startDate', {
-        startDate: new Date(startDate),
+        startDate: new Date(filters.startDate),
       });
     }
-    if (endDate) {
-      qb.andWhere('m.createdAt <= :endDate', { endDate: new Date(endDate) });
+    if (filters.endDate) {
+      qb.andWhere('m.createdAt <= :endDate', {
+        endDate: new Date(filters.endDate),
+      });
     }
-    if (status) {
-      qb.andWhere('m.status = :status', { status });
+    if (filters.status) {
+      qb.andWhere('m.status = :status', { status: filters.status });
     }
-    if (phoneNumber) {
+    if (filters.phoneNumber) {
+      // Backed by the phoneNumber trigram index, so a leading-wildcard match
+      // no longer forces a sequential scan.
       qb.andWhere('m.phoneNumber ILIKE :phone', {
-        phone: `%${phoneNumber}%`,
+        phone: `%${filters.phoneNumber.trim()}%`,
       });
+    }
+    if (filters.apiKeyId) {
+      qb.andWhere('m.apiKeyId = :apiKeyId', { apiKeyId: filters.apiKeyId });
+    }
+    if (filters.provider) {
+      qb.andWhere('m.provider = :provider', { provider: filters.provider });
     }
 
-    return qb
-      .orderBy('m.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    applySort(
+      qb,
+      resolveSort(sortBy, MESSAGE_SORT_WHITELIST, 'created_at', sortOrder),
+    );
+    qb.addOrderBy('m.id', 'DESC');
+
+    return paginateQueryBuilder(qb, { page, limit, withCount });
   }
 
   async getAdminUserStats(userId: string) {
@@ -539,13 +637,40 @@ export class MessagesService {
     }));
   }
 
-  async getAdminDailyUsage(dateString?: string) {
+  /**
+   * Per-user message usage for one IST calendar day.
+   *
+   * Paginated because the row count grows with the active-customer base — an
+   * unbounded version returns the whole customer list in a single response
+   * once the platform has a few thousand of them.
+   */
+  async getAdminDailyUsage(
+    dateString: string | undefined,
+    page: number,
+    limit: number,
+    search?: string,
+    withCount = true,
+  ): Promise<[DailyUsageRow[], number]> {
     const startDate = dateString ? parseISTDate(dateString) : istDayStart();
     const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
 
-    const result = await this.messageRepository
-      .createQueryBuilder('m')
-      .leftJoin('m.user', 'user')
+    const build = () => {
+      const qb = this.messageRepository
+        .createQueryBuilder('m')
+        .innerJoin('m.user', 'user')
+        .where('m.createdAt >= :startDate', { startDate })
+        .andWhere('m.createdAt < :endDate', { endDate });
+
+      const term = search?.trim();
+      if (term) {
+        qb.andWhere(`${USER_SEARCH_EXPRESSION} ILIKE :search`, {
+          search: `%${term}%`,
+        });
+      }
+      return qb;
+    };
+
+    const rowsQuery = build()
       .select('user.id', 'userId')
       .addSelect('user.firstName', 'firstName')
       .addSelect('user.lastName', 'lastName')
@@ -553,40 +678,60 @@ export class MessagesService {
       .addSelect('user.businessName', 'businessName')
       .addSelect('COUNT(*)', 'totalMessages')
       .addSelect(
-        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}')`,
+        `COUNT(*) FILTER (WHERE m.status = :deliveredStatus)`,
         'deliveredCount',
       )
       .addSelect(
-        `COUNT(*) FILTER (WHERE m.status = '${MessageStatus.FAILED}')`,
+        `COUNT(*) FILTER (WHERE m.status = :failedStatus)`,
         'failedCount',
       )
       .addSelect(
-        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = '${MessageStatus.DELIVERED}'), 0)`,
+        `COALESCE(SUM(m.costAmount) FILTER (WHERE m.status = :deliveredStatus), 0)`,
         'totalSpent',
       )
-      .where('m.createdAt >= :startDate', { startDate })
-      .andWhere('m.createdAt < :endDate', { endDate })
-      .andWhere('user.id IS NOT NULL')
+      .setParameters({
+        deliveredStatus: MessageStatus.DELIVERED,
+        failedStatus: MessageStatus.FAILED,
+      })
       .groupBy('user.id')
       .addGroupBy('user.firstName')
       .addGroupBy('user.lastName')
       .addGroupBy('user.email')
       .addGroupBy('user.businessName')
       .orderBy('"totalMessages"', 'DESC')
-      .getRawMany();
+      .addOrderBy('user.id', 'DESC')
+      // Raw grouped queries need offset/limit; skip/take is for entity
+      // hydration and would be ignored here.
+      .offset((page - 1) * limit)
+      .limit(limit);
 
-    return result.map((r) => ({
-      user: {
-        id: r.userId,
-        firstName: r.firstName,
-        lastName: r.lastName,
-        email: r.email,
-        businessName: r.businessName,
-      },
-      totalMessages: parseInt(r.totalMessages, 10),
-      deliveredCount: parseInt(r.deliveredCount, 10),
-      failedCount: parseInt(r.failedCount, 10),
-      totalSpent: parseFloat(r.totalSpent),
-    }));
+    const rows = await rowsQuery.getRawMany();
+
+    let total = COUNT_SKIPPED;
+    if (withCount) {
+      // COUNT(DISTINCT user) rather than counting the grouped rows, which a
+      // plain count() over the same builder would get wrong.
+      const countRow = await build()
+        .select('COUNT(DISTINCT user.id)', 'count')
+        .getRawOne<{ count: string }>();
+      total = parseInt(countRow?.count ?? '0', 10);
+    }
+
+    return [
+      rows.map((r) => ({
+        user: {
+          id: r.userId,
+          firstName: r.firstName,
+          lastName: r.lastName,
+          email: r.email,
+          businessName: r.businessName,
+        },
+        totalMessages: parseInt(r.totalMessages, 10),
+        deliveredCount: parseInt(r.deliveredCount, 10),
+        failedCount: parseInt(r.failedCount, 10),
+        totalSpent: parseFloat(r.totalSpent),
+      })),
+      total,
+    ];
   }
 }

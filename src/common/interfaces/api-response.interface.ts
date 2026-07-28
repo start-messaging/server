@@ -1,10 +1,20 @@
 export interface PaginationMeta {
   page: number;
   limit: number;
+  /** -1 when the client passed `withCount=false` and the total is unknown. */
   totalItems: number;
+  /** -1 when the client passed `withCount=false` and the total is unknown. */
   totalPages: number;
   hasNextPage: boolean;
   hasPreviousPage: boolean;
+}
+
+/** Pagination metadata for keyset-paginated (cursor) endpoints. */
+export interface CursorPaginationMeta {
+  limit: number;
+  /** Opaque token to pass back as `?cursor=` for the next page. */
+  nextCursor: string | null;
+  hasNextPage: boolean;
 }
 
 export interface ApiSuccessResponse<T> {

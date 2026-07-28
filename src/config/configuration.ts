@@ -29,6 +29,10 @@ export default () => ({
       apiKey: process.env.TWOFACTOR_API_KEY,
       templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP',
     },
+    console: {
+      /** Log messages instead of sending them. Local development only. */
+      enabled: process.env.SMS_CONSOLE_PROVIDER === 'true',
+    },
   },
   mailgun: {
     apiKey: process.env.MAILGUN_API_KEY,

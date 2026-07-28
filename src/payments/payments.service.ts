@@ -12,6 +12,7 @@ import { PaymentGatewayFactory } from './gateways/payment-gateway.factory.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { VerifyPaymentDto } from './dto/verify-payment.dto.js';
+import { istDayStart } from '../common/utils/date.util.js';
 
 @Injectable()
 export class PaymentsService {
@@ -66,8 +67,10 @@ export class PaymentsService {
     todayAmount: number;
     completedCount: number;
   }> {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    // IST day boundary, matching the message and revenue stats it sits beside
+    // on the admin dashboard. Server-local midnight disagreed with those on any
+    // host not running in IST.
+    const todayStart = istDayStart();
 
     const row = await this.paymentRepository
       .createQueryBuilder('p')
