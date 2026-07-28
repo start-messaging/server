@@ -10,6 +10,8 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service.js';
+import type { SignupAttribution } from './auth.service.js';
+import { AttributionService } from '../affiliate/services/attribution.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { GoogleAuthDto } from './dto/google-auth.dto.js';
@@ -20,7 +22,25 @@ import type { AuthenticatedRequest } from '../common/interfaces/authenticated-re
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly attributionService: AttributionService,
+  ) {}
+
+  /**
+   * Pulls referral context off the signup request.
+   *
+   * The code comes from the HttpOnly cookie the click endpoint set, never from
+   * the request body — a client-supplied code would let anyone credit
+   * themselves for a signup they had nothing to do with.
+   */
+  private readAttribution(req: Request): SignupAttribution {
+    return {
+      referralCode: this.attributionService.readCookie(req),
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    };
+  }
 
   @Post('register')
   @Public()
@@ -31,8 +51,11 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, user } =
-      await this.authService.register(dto, req.ip ?? 'unknown');
+    const { accessToken, refreshToken, user } = await this.authService.register(
+      dto,
+      req.ip ?? 'unknown',
+      this.readAttribution(req),
+    );
 
     res.cookie(
       'refresh_token',
@@ -52,7 +75,11 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const { accessToken, refreshToken, user } =
-      await this.authService.googleAuth(dto, req.ip ?? 'unknown');
+      await this.authService.googleAuth(
+        dto,
+        req.ip ?? 'unknown',
+        this.readAttribution(req),
+      );
 
     res.cookie(
       'refresh_token',
@@ -72,8 +99,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, user } =
-      await this.authService.login(dto, req.ip ?? 'unknown');
+    const { accessToken, refreshToken, user } = await this.authService.login(
+      dto,
+      req.ip ?? 'unknown',
+    );
 
     res.cookie(
       'refresh_token',
@@ -105,7 +134,11 @@ export class AuthController {
     }
 
     const { accessToken, refreshToken, user } =
-      await this.authService.refreshTokens(parsed.userId, parsed.token, req.ip ?? 'unknown');
+      await this.authService.refreshTokens(
+        parsed.userId,
+        parsed.token,
+        req.ip ?? 'unknown',
+      );
 
     res.cookie(
       'refresh_token',

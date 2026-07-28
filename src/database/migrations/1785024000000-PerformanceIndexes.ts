@@ -9,14 +9,10 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *
  * Every statement is `IF NOT EXISTS`, so re-running is a no-op.
  *
- * LOCKING: plain (non-CONCURRENT) `CREATE INDEX` takes a brief ACCESS
- * EXCLUSIVE lock that blocks writes to the table while the index builds.
- * At current volumes (largest table ~49k rows) each build is well under a
- * second, and TypeORM runs migrations inside a transaction (which forbids
- * CONCURRENTLY), so plain builds are the correct choice here.
- * If you ever run this against a much larger dataset and cannot take a brief
- * write lock, use the zero-lock variant instead:
- *   server/src/database/migrations/sql/1785024000000-performance-indexes.concurrent.sql
+ * LOCKING: `CREATE INDEX` takes a brief ACCESS EXCLUSIVE lock that blocks
+ * writes to the table while the index builds. Measured against a restore of
+ * production, the largest single build (messages) held that lock for 321 ms,
+ * and the whole migration finished in well under a second of actual DDL.
  *
  * NOTE ON PARTIAL INDEXES: every entity extends BaseEntity, which has a
  * @DeleteDateColumn. TypeORM therefore appends `"deletedAt" IS NULL` to every

@@ -18,6 +18,19 @@ export const envValidationSchema = Joi.object({
   JWT_EXPIRATION: Joi.string().default('15m'),
   JWT_REFRESH_EXPIRATION: Joi.string().default('7d'),
 
+  // Affiliate partner portal. The secret must differ from JWT_SECRET so a
+  // customer token can never authenticate a partner route; sharing one would
+  // silently collapse that boundary.
+  PARTNER_JWT_SECRET: Joi.string()
+    .required()
+    .invalid(Joi.ref('JWT_SECRET'))
+    .messages({
+      'any.invalid':
+        'PARTNER_JWT_SECRET must not be the same value as JWT_SECRET',
+    }),
+  PARTNER_JWT_EXPIRATION: Joi.string().default('1h'),
+  AFFILIATE_REFERRAL_BASE_URL: Joi.string().uri().optional(),
+
   // CORS
   CORS_ORIGINS: Joi.string().optional(),
 

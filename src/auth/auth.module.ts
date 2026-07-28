@@ -7,11 +7,15 @@ import { AuthController } from './auth.controller.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { UsersModule } from '../users/users.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
+import { AffiliateModule } from '../affiliate/affiliate.module.js';
 
 @Module({
   imports: [
     UsersModule,
     WalletModule,
+    // For AttributionService: signup is where a referral cookie becomes a
+    // permanent link between the new customer and their partner.
+    AffiliateModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],

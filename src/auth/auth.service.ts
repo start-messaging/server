@@ -18,6 +18,15 @@ import { UserRole } from '../users/enums/user-role.enum.js';
 import type { User } from '../users/entities/user.entity.js';
 import type { CookieOptions } from 'express';
 import { REFRESH_TOKEN_MAX_AGE_MS } from '../common/constants/app.constants.js';
+import { AttributionService } from '../affiliate/services/attribution.service.js';
+
+/** Referral context carried on a signup request, read from the cookie. */
+export interface SignupAttribution {
+  referralCode: string | null;
+  ipAddress?: string;
+  userAgent?: string;
+  landingPath?: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -30,6 +39,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly walletService: WalletService,
+    private readonly attributionService: AttributionService,
   ) {
     const googleClientId = this.configService.get<string>('google.clientId');
     this.googleClient = googleClientId
@@ -39,7 +49,37 @@ export class AuthService {
       this.configService.get<number>('auth.bcryptRounds') ?? 10;
   }
 
-  async register(dto: RegisterDto, ip: string) {
+  /**
+   * Links a brand-new account to the partner whose referral cookie it carries.
+   *
+   * Awaited rather than fired and forgotten so the referral exists before the
+   * signup response is returned — but `attributeSignup` never throws, so a
+   * problem in the affiliate programme can never stop somebody creating an
+   * account.
+   */
+  private async attribute(
+    user: User,
+    attribution: SignupAttribution | undefined,
+  ): Promise<void> {
+    if (!attribution?.referralCode) return;
+
+    await this.attributionService.attributeSignup(
+      user.id,
+      user.email,
+      attribution.referralCode,
+      {
+        ipAddress: attribution.ipAddress,
+        userAgent: attribution.userAgent,
+        landingPath: attribution.landingPath,
+      },
+    );
+  }
+
+  async register(
+    dto: RegisterDto,
+    ip: string,
+    attribution?: SignupAttribution,
+  ) {
     const existing = await this.usersService.findByEmail(dto.email);
     if (existing) {
       throw new ConflictException('Email already registered');
@@ -77,6 +117,8 @@ export class AuthService {
       user.id,
     );
 
+    await this.attribute(user, attribution);
+
     return this.buildAuthResponse(user, ip);
   }
 
@@ -104,7 +146,11 @@ export class AuthService {
     return this.buildAuthResponse(user, ip);
   }
 
-  async googleAuth(dto: GoogleAuthDto, ip: string) {
+  async googleAuth(
+    dto: GoogleAuthDto,
+    ip: string,
+    attribution?: SignupAttribution,
+  ) {
     if (!this.googleClient) {
       throw new UnauthorizedException(
         'Google authentication is not configured',
@@ -171,6 +217,11 @@ export class AuthService {
       user.id,
     );
 
+    // Only this branch attributes. The two branches above return an existing
+    // account — re-attributing one would let a partner cookie an established
+    // customer and take over someone else's referral.
+    await this.attribute(user, attribution);
+
     return this.buildAuthResponse(user, ip);
   }
 
@@ -229,7 +280,7 @@ export class AuthService {
 
     const refreshToken = randomBytes(32).toString('hex');
     const refreshTokenHash = this.hashToken(refreshToken);
-    
+
     await Promise.all([
       this.usersService.updateRefreshTokenHash(user.id, refreshTokenHash),
       this.usersService.updateLastLogin(user.id, ip),

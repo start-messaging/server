@@ -18,6 +18,20 @@ export default () => ({
     expiration: process.env.JWT_EXPIRATION ?? '15m',
     refreshExpiration: process.env.JWT_REFRESH_EXPIRATION ?? '7d',
   },
+  /**
+   * Affiliate portal signing key. Kept distinct from `jwt.secret` so a
+   * customer token can never authenticate a partner route, and vice-versa.
+   */
+  partnerJwt: {
+    secret: process.env.PARTNER_JWT_SECRET,
+    expiration: process.env.PARTNER_JWT_EXPIRATION ?? '1h',
+  },
+  affiliate: {
+    /** Where a referral link points — the customer-facing dashboard. */
+    referralBaseUrl:
+      process.env.AFFILIATE_REFERRAL_BASE_URL ??
+      'https://app.startmessaging.com',
+  },
   sms: {
     fast2sms: {
       apiKey: process.env.FAST2SMS_API_KEY,
