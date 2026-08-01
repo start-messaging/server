@@ -95,6 +95,26 @@ export async function seedCustomer(
   return { id: row.id, email };
 }
 
+/**
+ * Puts a customer in the state a real paying one is in.
+ *
+ * `OnboardingGuard` lets a request through only once `kycStatus` is APPROVED,
+ * so every billable endpoint — OTP send above all — is unreachable for a
+ * freshly registered account. Tests that are about billing rather than about
+ * onboarding start from here.
+ */
+export async function onboardCustomer(userId: string): Promise<void> {
+  await sql(
+    `UPDATE "users"
+        SET "mobileVerified" = true,
+            "mobileNumber" = COALESCE("mobileNumber", '+919000000001'),
+            "kycStatus" = 'approved',
+            "hasCompletedOnboarding" = true
+      WHERE "id" = $1`,
+    [userId],
+  );
+}
+
 /** Attributes a seeded user to a partner without going through signup. */
 export async function seedReferral(
   partnerId: string,
@@ -164,17 +184,22 @@ export async function createPartner(
     ]);
   }
 
-  const login = await api.post('/partner/auth/login', {
-    data: { email, password },
-  });
-  expect(login.ok(), await login.text()).toBeTruthy();
-  const body = await payload<{ accessToken: string }>(login);
+  // A partner still under review is refused at login by design, so there is no
+  // token to fetch for one.
+  let accessToken = '';
+  if (opts.active !== false) {
+    const login = await api.post('/partner/auth/login', {
+      data: { email, password },
+    });
+    expect(login.ok(), await login.text()).toBeTruthy();
+    accessToken = (await payload<{ accessToken: string }>(login)).accessToken;
+  }
 
   return {
     id: row.id,
     email,
     password,
-    accessToken: body.accessToken,
+    accessToken,
     referralCode: row.referralCode,
   };
 }
