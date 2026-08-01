@@ -84,4 +84,20 @@ export class AffiliateSettings extends BaseEntity {
    */
   @Column({ type: 'int', default: 168 })
   accrualLookbackHours: number;
+
+  /**
+   * Start of the last accrual run that completed successfully.
+   *
+   * The lookback window alone is not enough: if the worker is down (or Redis
+   * is) for longer than `accrualLookbackHours`, the messages delivered during
+   * the outage fall outside every subsequent window and are never accrued.
+   * The accrual extends its window back to this timestamp whenever that is
+   * further back than the lookback, so an outage delays commission rather than
+   * losing it. It only ever widens the window — the re-scan behaviour the
+   * lookback exists for is unchanged.
+   *
+   * Null on a fresh install, where there is no gap to cover.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastAccrualAt: Date | null;
 }

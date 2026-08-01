@@ -3,7 +3,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import { AffiliateSettingsService } from './affiliate-settings.service.js';
 import { istDayStart } from '../../common/utils/date.util.js';
 import { PartnerPayout } from '../entities/partner-payout.entity.js';
-import { Partner } from '../entities/partner.entity.js';
+import { Partner, PayoutMethod } from '../entities/partner.entity.js';
 
 /** Why a partner was passed over, so the portal can explain the wait. */
 export type PayoutSkipReason =
@@ -144,24 +144,58 @@ export class PartnerPayoutService {
     // pays. Checking here (rather than encoding the day in a cron expression)
     // means an admin changing the day in settings takes effect immediately,
     // without re-registering a repeatable job.
+    //
+    // `>=`, not `===`. An exact-day match makes the whole month's settlement
+    // depend on one job firing on one day: a deploy, a restart or a Redis blip
+    // spanning that instant used to drop the run silently and nothing retried
+    // it until the following month. Attempting on every day from the payout
+    // day onwards makes the run converge instead — and re-running is already
+    // safe, because `UQ_partner_payouts_partnerId_periodKey` and the
+    // `accrued`-only sweep mean a partner already settled this period is
+    // skipped rather than paid twice.
     const istDay = new Date(now.getTime() + 5.5 * 60 * 60 * 1000).getUTCDate();
-    if (!options.force && istDay !== settings.payoutDayOfMonth) {
+    if (!options.force && istDay < settings.payoutDayOfMonth) {
       return {
         ...base,
         skipped: true,
-        reason: `Not payout day (IST day ${istDay}, configured ${settings.payoutDayOfMonth})`,
+        reason: `Before payout day (IST day ${istDay}, configured ${settings.payoutDayOfMonth})`,
       };
     }
 
     // Only partners who could possibly qualify are loaded, so the run does not
     // walk the entire partner table once the programme has many sign-ups.
+    //
+    // The amount predicate reads the commission ledger, not the cached
+    // `partners.unpaidEarnings` column. The cache is a denormalisation that
+    // reconciliation exists precisely because it can drift, and selecting on it
+    // made the portal and the run disagree in both directions: a cache reading
+    // low silently skipped a partner the portal had told was eligible, and a
+    // cache reading high selected one whose real balance was under the minimum.
+    // `getEligibility` sums the same rows, so the two now cannot diverge.
     const candidates = await this.dataSource.query<{ id: string }[]>(
       `
       SELECT p."id"
       FROM "partners" p
       WHERE p."deletedAt" IS NULL
         AND p."status" = 'active'
-        AND p."unpaidEarnings" >= $1
+        -- A partner with no payout destination must not be settled. Without
+        -- this the run raises a payout whose payoutMethod is NULL, marks every
+        -- commission paid and moves the balance into paidEarnings, so the
+        -- portal shows zero available for money that nobody can actually
+        -- send -- and it burns the partner's one payout slot for the period.
+        AND p."payoutMethod" IS NOT NULL
+        AND (
+          (p."payoutMethod" = 'upi' AND p."upiId" IS NOT NULL)
+          OR (p."payoutMethod" = 'bank'
+              AND p."bankAccountNumber" IS NOT NULL
+              AND p."bankIfsc" IS NOT NULL)
+        )
+        AND (
+          SELECT COALESCE(SUM(c."amount"), 0) FROM "partner_commissions" c
+          WHERE c."partnerId" = p."id"
+            AND c."status" = 'accrued'
+            AND c."deletedAt" IS NULL
+        ) >= $1
         AND (
           SELECT COUNT(*) FROM "referrals" r
           WHERE r."partnerId" = p."id"
@@ -178,7 +212,12 @@ export class PartnerPayoutService {
 
     for (const { id: partnerId } of candidates) {
       try {
-        const amount = await this.settlePartner(partnerId, periodKey, now);
+        const amount = await this.settlePartner(
+          partnerId,
+          periodKey,
+          now,
+          settings.minPayoutAmount,
+        );
         if (amount === null) {
           skippedPartners.already_paid_this_period += 1;
           continue;
@@ -220,6 +259,7 @@ export class PartnerPayoutService {
     partnerId: string,
     periodKey: string,
     now: Date,
+    minPayoutAmount: number,
   ): Promise<number | null> {
     return this.dataSource.transaction(async (manager: EntityManager) => {
       // Lock the partner row for the duration. Without it, a concurrent
@@ -252,6 +292,18 @@ export class PartnerPayoutService {
       const amount = Number(totals?.total ?? 0);
       const commissionCount = Number(totals?.cnt ?? 0);
       if (amount <= 0 || commissionCount === 0) return null;
+
+      // Re-checked here, under the row lock, against the figure actually about
+      // to be paid. The candidate query runs before the lock is taken, so a
+      // release from a failed payout or a reversal landing in between could
+      // otherwise push a partner below the threshold and still pay them.
+      if (amount < minPayoutAmount) {
+        this.logger.warn(
+          `Partner ${partnerId} selected with ₹${amount.toFixed(2)} but the ` +
+            `minimum is ₹${minPayoutAmount}; skipping rather than paying below it.`,
+        );
+        return null;
+      }
 
       const [{ qualified }] = await manager.query<{ qualified: string }[]>(
         `SELECT COUNT(*) AS qualified FROM "referrals"
@@ -321,9 +373,21 @@ export class PartnerPayoutService {
     });
   }
 
-  /** Last four digits only — the payout record never duplicates full details. */
+  /**
+   * Last four digits only — the payout record never duplicates full details.
+   *
+   * Selected by the method actually being paid, not by whichever field happens
+   * to be populated. A partner who set up UPI and later switched to bank keeps
+   * the old `upiId` (the profile DTO's `@ValidateIf` skips it rather than
+   * clearing it), so preferring `upiId` unconditionally stamped a BANK payout
+   * with the tail of a stale UPI handle — corrupting the one column whose
+   * whole purpose is an immutable record of where the money went.
+   */
   private maskAccount(partner: Partner): string | null {
-    const raw = partner.upiId ?? partner.bankAccountNumber;
+    const raw =
+      partner.payoutMethod === PayoutMethod.UPI
+        ? partner.upiId
+        : partner.bankAccountNumber;
     if (!raw) return null;
     return raw.length <= 4 ? `••••${raw}` : `••••${raw.slice(-4)}`;
   }

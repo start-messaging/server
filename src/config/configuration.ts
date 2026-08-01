@@ -78,6 +78,16 @@ export default () => ({
       : [
           'https://app.startmessaging.com',
           'https://admin.startmessaging.com',
+          // The partner portal. Without it here, every request from the portal
+          // is blocked by the browser on any deploy that does not set
+          // CORS_ORIGINS explicitly — and CORS_ORIGINS is optional.
+          // Both spellings are listed because the repo is inconsistent about
+          // which one is the real host (the Worker is named `partners`, while
+          // .env.example referred to `partner.`). Set CORS_ORIGINS explicitly
+          // at deploy and neither default is used; until then, allowing an
+          // extra origin you own is harmless and a missing one is an outage.
+          'https://partners.startmessaging.com',
+          'https://partner.startmessaging.com',
           'http://localhost:5173',
           'http://localhost:5174',
           'http://localhost:5175',

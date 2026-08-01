@@ -207,6 +207,17 @@ export class PartnersService {
     const patch: Partial<Partner> = { status };
     if (adminNotes !== undefined) patch.adminNotes = adminNotes;
 
+    // Suspending or rejecting a partner has to end their session, not just
+    // stop future earnings. The strategy trusts the token without reloading
+    // the partner (the same pattern as customer auth), so an already-issued
+    // access token keeps working until it expires — dropping the refresh hash
+    // caps that at the access token's lifetime instead of letting the session
+    // be renewed indefinitely. The money paths are separately gated on
+    // `status = 'active'`, so nothing can be earned or paid in the meantime.
+    if (status !== PartnerStatus.ACTIVE) {
+      patch.refreshTokenHash = null;
+    }
+
     await this.partnerRepo.update(id, patch);
     const partner = await this.findById(id);
     if (!partner) throw new NotFoundException('Partner not found');

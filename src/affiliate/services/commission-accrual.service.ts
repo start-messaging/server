@@ -51,6 +51,14 @@ export class CommissionAccrualService {
     const settings = await this.settingsService.get();
 
     if (!settings.isEnabled) {
+      // The watermark advances even though nothing is accrued. Being switched
+      // off is a decision, not an outage: if the watermark froze here, the
+      // window would widen across the whole disabled period and re-enabling
+      // would retroactively pay every OTP delivered while the programme was
+      // deliberately stopped — exactly the money the business chose not to owe.
+      // Leaving it frozen is worse than the gap the watermark exists to close.
+      await this.settingsService.recordAccrualRun(new Date(startedAt));
+
       return {
         skipped: true,
         reason: 'Affiliate programme is disabled',
@@ -67,12 +75,36 @@ export class CommissionAccrualService {
     // can be created before a run and only reach DELIVERED after it; a strict
     // watermark would skip it permanently. Overlap is free because of the
     // unique constraint.
-    const windowStart = new Date(
+    //
+    // The watermark is used only to *widen* that window, never to narrow it:
+    // if the last successful run is further back than the lookback — the
+    // worker was down, Redis was unreachable, the interval was raised above
+    // the lookback — the gap is still scanned. Without this, messages
+    // delivered during an outage longer than `accrualLookbackHours` fall
+    // outside every future window and are never paid.
+    const lookbackStart = new Date(
       Date.now() - settings.accrualLookbackHours * 60 * 60 * 1000,
     );
+    const watermark = settings.lastAccrualAt
+      ? new Date(settings.lastAccrualAt)
+      : null;
+    const windowStart =
+      watermark && watermark < lookbackStart ? watermark : lookbackStart;
 
+    if (watermark && watermark < lookbackStart) {
+      this.logger.warn(
+        `Accrual window widened to the watermark (${watermark.toISOString()}): ` +
+          `the last successful run is older than the ${settings.accrualLookbackHours}h lookback.`,
+      );
+    }
+
+    const runStartedAt = new Date(startedAt);
     const newlyQualified = await this.sweepQualifiedReferrals();
     const accrual = await this.accrueCommissions(windowStart);
+
+    // Only after the scan succeeded — a throw above must leave the watermark
+    // where it was so the next run re-covers the same ground.
+    await this.settingsService.recordAccrualRun(runStartedAt);
 
     const result: AccrualRunResult = {
       skipped: false,
@@ -165,6 +197,10 @@ export class CommissionAccrualService {
           ON p."id" = r."partnerId"
          AND p."deletedAt" IS NULL
          AND p."status" = 'active'
+        -- isEnabled is re-checked here as well as in the caller. The caller
+        -- reads it through a 30s cache, so a run that started just before the
+        -- programme was switched off would otherwise insert against a stale
+        -- flag; the database sees the committed value.
         CROSS JOIN "affiliate_settings" s
         CROSS JOIN LATERAL (
           SELECT
@@ -176,6 +212,7 @@ export class CommissionAccrualService {
             COALESCE(p."commissionRate", s."defaultCommissionRate") AS rate_value
         ) AS eff
         WHERE s."isSingleton" = true
+          AND s."isEnabled" = true
           AND m."status" = 'delivered'
           AND m."deletedAt" IS NULL
           AND m."costAmount" > 0

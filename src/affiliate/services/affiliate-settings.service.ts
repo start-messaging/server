@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
@@ -25,6 +25,7 @@ export interface ResolvedSettings {
   cookieDurationDays: number;
   accrualIntervalHours: number;
   accrualLookbackHours: number;
+  lastAccrualAt: Date | null;
 }
 
 @Injectable()
@@ -69,10 +70,36 @@ export class AffiliateSettingsService {
 
     // isSingleton is the uniqueness guard, never something a caller may set.
     delete patch.isSingleton;
+    // lastAccrualAt is the accrual watermark, owned by the accrual job.
+    delete patch.lastAccrualAt;
+
+    this.assertInvariants({ ...current, ...patch });
 
     await this.repo.update({ id: current.id }, patch);
     this.invalidate();
     return this.get();
+  }
+
+  /**
+   * Rejects combinations that are individually valid but wrong together.
+   *
+   * Field-level decorators cannot catch these: a PATCH may carry only one of
+   * the pair, so the check has to run against the merged row. Each of these
+   * silently loses money rather than erroring at run time, which is why they
+   * are refused at the point of entry instead of clamped later.
+   */
+  private assertInvariants(next: AffiliateSettings): void {
+    // The accrual re-scans `accrualLookbackHours` of message history on every
+    // run. A lookback shorter than the gap between runs leaves the difference
+    // permanently unscanned — those commissions are never accrued, and nothing
+    // revisits them.
+    if (next.accrualLookbackHours < next.accrualIntervalHours) {
+      throw new BadRequestException(
+        `accrualLookbackHours (${next.accrualLookbackHours}) must be at least ` +
+          `accrualIntervalHours (${next.accrualIntervalHours}); a shorter ` +
+          `lookback leaves messages between runs permanently unaccrued.`,
+      );
+    }
   }
 
   /** Drops the cache so the next read reflects a write immediately. */
@@ -92,6 +119,17 @@ export class AffiliateSettingsService {
       cookieDurationDays: row.cookieDurationDays,
       accrualIntervalHours: row.accrualIntervalHours,
       accrualLookbackHours: row.accrualLookbackHours,
+      lastAccrualAt: row.lastAccrualAt,
     };
+  }
+
+  /**
+   * Advances the accrual watermark. Called by the accrual job only, with the
+   * time that run *started* — anything delivered while it was running has to
+   * stay inside the next window.
+   */
+  async recordAccrualRun(startedAt: Date): Promise<void> {
+    await this.repo.update({ isSingleton: true }, { lastAccrualAt: startedAt });
+    this.invalidate();
   }
 }

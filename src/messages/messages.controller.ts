@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MessagesService } from './messages.service.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
@@ -32,6 +39,19 @@ export class MessagesController {
     // Cursor mode: flat cost per page and stable under concurrent inserts,
     // which is what a client walking its whole history wants.
     if (query.cursor !== undefined) {
+      // Keyset pagination seeks on (createdAt, id); that ordering is what makes
+      // the cursor meaningful, so it cannot be overridden. This used to accept
+      // sortBy/sortOrder and drop them silently, so a client asking for
+      // `sortBy=cost&cursor=…` got newest-first rows back believing they were
+      // sorted by cost.
+      if (query.sortBy !== undefined || query.sortOrder !== undefined) {
+        throw new BadRequestException(
+          'sortBy and sortOrder cannot be combined with cursor pagination; ' +
+            'cursor pages are always ordered newest first. Use page-based ' +
+            'pagination to sort by another field.',
+        );
+      }
+
       const page = await this.messagesService.findByUserCursor(
         userId,
         query.limit,

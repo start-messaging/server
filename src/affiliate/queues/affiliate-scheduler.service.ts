@@ -18,8 +18,34 @@ export class AffiliateSchedulerService implements OnModuleInit {
     private readonly settingsService: AffiliateSettingsService,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    await this.syncSchedules();
+  onModuleInit(): void {
+    // Retried in the background rather than awaited once. A single failed
+    // attempt used to be the end of it: the error was logged, boot continued,
+    // and the repeatable jobs were never registered again for the life of the
+    // process — so one Redis blip during a rolling deploy meant no accrual and
+    // no payout until somebody noticed and restarted.
+    void this.syncWithRetry();
+  }
+
+  private async syncWithRetry(): Promise<void> {
+    const delaysMs = [1_000, 5_000, 15_000, 60_000, 300_000];
+
+    for (let attempt = 0; ; attempt++) {
+      if (await this.syncSchedules()) {
+        if (attempt > 0) {
+          this.logger.log(
+            `Affiliate schedules registered after ${attempt + 1} attempts.`,
+          );
+        }
+        return;
+      }
+
+      const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)];
+      this.logger.warn(
+        `Affiliate schedule registration failed; retrying in ${delay / 1000}s.`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
 
   /**
@@ -30,7 +56,7 @@ export class AffiliateSchedulerService implements OnModuleInit {
    * a new repeatable job each time. Called again whenever the accrual interval
    * changes, since that interval is baked into the schedule.
    */
-  async syncSchedules(): Promise<void> {
+  async syncSchedules(): Promise<boolean> {
     try {
       const settings = await this.settingsService.get();
 
@@ -43,12 +69,23 @@ export class AffiliateSchedulerService implements OnModuleInit {
         },
       );
 
-      // Daily, just after midnight IST (18:30 UTC). The handler no-ops unless
-      // today is the configured payout day, so the schedule never needs to
-      // change when an admin moves that day.
+      // Daily, just after midnight IST. The handler no-ops unless today is the
+      // configured payout day, so the schedule never needs to change when an
+      // admin moves that day.
+      //
+      // `tz` is explicit. Without it BullMQ resolves the cron in the process's
+      // local timezone, so the comment's "18:30 UTC" was only true when the
+      // container happened to run on UTC — and the handler's gate is on the IST
+      // calendar day, so a shifted process timezone can move the run onto the
+      // wrong side of midnight and skip the payout day entirely.
+      //
+      // Anchored to Asia/Kolkata directly rather than 18:30 UTC: it expresses
+      // the intent ("00:00 IST"), and 00:30 gives half an hour of clearance
+      // from the day boundary the gate compares against, instead of landing on
+      // it exactly.
       await this.queue.upsertJobScheduler(
         PAYOUT_SCHEDULER,
-        { pattern: '30 18 * * *' },
+        { pattern: '30 0 * * *', tz: 'Asia/Kolkata' },
         {
           name: AffiliateJob.PAYOUT,
           opts: { removeOnComplete: 50, removeOnFail: 100 },
@@ -70,13 +107,15 @@ export class AffiliateSchedulerService implements OnModuleInit {
         `Affiliate schedules registered (accrual every ${settings.accrualIntervalHours}h, ` +
           `payout daily gated on day ${settings.payoutDayOfMonth})`,
       );
+      return true;
     } catch (err) {
       // Never fatal: the API must still come up if Redis is briefly
       // unavailable, and the jobs can be triggered manually from the admin
-      // panel in the meantime.
+      // panel in the meantime. The caller retries.
       this.logger.error(
         `Could not register affiliate schedules: ${(err as Error).message}`,
       );
+      return false;
     }
   }
 }

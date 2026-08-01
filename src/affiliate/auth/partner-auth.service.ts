@@ -177,6 +177,11 @@ export class PartnerAuthService {
     const safe: Partial<Partner> = { ...partner };
     delete safe.passwordHash;
     delete safe.refreshTokenHash;
+    // Written by admins *about* the partner — approval reasoning, fraud
+    // suspicions, whatever was noted while reviewing them. It has no
+    // `select: false` on the entity, so without this it rode along in every
+    // login, refresh and profile response the portal makes.
+    delete safe.adminNotes;
 
     return {
       ...safe,

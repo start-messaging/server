@@ -148,7 +148,12 @@ export class PartnerController {
       { partnerId, status: query.status },
       query.shouldCount,
     );
-    return paginatedResponse(items, total, query.page, query.limit);
+    return paginatedResponse(
+      items.map((p) => this.ledgerService.sanitizePayoutForPartner(p)),
+      total,
+      query.page,
+      query.limit,
+    );
   }
 
   @Get('payouts/:id')
@@ -159,7 +164,8 @@ export class PartnerController {
   ) {
     // Scoped by partnerId so an id guessed from elsewhere returns 404 rather
     // than another partner's settlement.
-    return this.ledgerService.findPayout(id, partnerId);
+    const payout = await this.ledgerService.findPayout(id, partnerId);
+    return this.ledgerService.sanitizePayoutForPartner(payout);
   }
 
   @Patch('profile')

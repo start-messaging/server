@@ -19,13 +19,15 @@ import { AffiliateLedgerService } from '../services/affiliate-ledger.service.js'
 import { PartnerPayoutService } from '../services/partner-payout.service.js';
 import { CommissionAccrualService } from '../services/commission-accrual.service.js';
 import { PartnerAuthService } from '../auth/partner-auth.service.js';
+import { AffiliateSchedulerService } from '../queues/affiliate-scheduler.service.js';
 import { PartnerStatus } from '../entities/partner.entity.js';
-import { PayoutStatus } from '../entities/partner-payout.entity.js';
 import {
   PartnerListQueryDto,
   PayoutListQueryDto,
 } from '../dto/affiliate-query.dto.js';
 import {
+  BlockReferralDto,
+  ReverseCommissionDto,
   UpdateAffiliateSettingsDto,
   UpdatePartnerCommissionDto,
   UpdatePartnerStatusDto,
@@ -44,6 +46,7 @@ export class AdminAffiliateController {
     private readonly payoutService: PartnerPayoutService,
     private readonly accrualService: CommissionAccrualService,
     private readonly partnerAuthService: PartnerAuthService,
+    private readonly schedulerService: AffiliateSchedulerService,
   ) {}
 
   // ── Programme settings ─────────────────────────────────
@@ -60,7 +63,19 @@ export class AdminAffiliateController {
       'Update commission rate, thresholds and schedule. Existing commissions keep the rate they were accrued at.',
   })
   async updateSettings(@Body() dto: UpdateAffiliateSettingsDto) {
-    return this.settingsService.update(dto);
+    const before = await this.settingsService.get();
+    const settings = await this.settingsService.update(dto);
+
+    // The accrual cadence is baked into the BullMQ repeatable job, not read at
+    // run time. Without re-registering it here the admin would see the new
+    // interval in the UI while the queue kept firing on the old one until the
+    // next deploy. `upsertJobScheduler` is keyed on a stable id in Redis, so
+    // one instance doing this converges the schedule for every replica.
+    if (settings.accrualIntervalHours !== before.accrualIntervalHours) {
+      await this.schedulerService.syncSchedules();
+    }
+
+    return settings;
   }
 
   // ── Overview ───────────────────────────────────────────
@@ -175,18 +190,43 @@ export class AdminAffiliateController {
     @CurrentUser('id') adminId: string,
     @Body() dto: UpdatePayoutStatusDto,
   ) {
-    const payout = await this.ledgerService.updatePayoutStatus(id, {
-      ...dto,
-      adminId,
-    });
+    // Marking a payout FAILED also returns its commissions to the unpaid pool.
+    // That happens inside updatePayoutStatus' transaction rather than as a
+    // second call here: committing the status without the release would strand
+    // the money as `paid` against a payout that never went out, and
+    // reconciliation cannot detect it because the ledger is what it trusts.
+    return this.ledgerService.updatePayoutStatus(id, { ...dto, adminId });
+  }
 
-    // A failed transfer must return the money to the unpaid pool, otherwise it
-    // stays marked paid and silently disappears from the partner's balance.
-    if (dto.status === PayoutStatus.FAILED) {
-      await this.ledgerService.releaseFailedPayout(id);
-    }
+  // ── Remediation ────────────────────────────────────────
+  // The accrual query already skips blocked referrals and reconciliation
+  // already ignores reversed commissions; these are the endpoints that write
+  // those states. Without them a fraudulent or refunded referral keeps earning
+  // and gets paid at the end of the month.
 
-    return payout;
+  @Patch('commissions/:id/reverse')
+  @ApiOperation({
+    summary:
+      'Claw back an accrued commission. Rejects rows already included in a settled payout.',
+  })
+  async reverseCommission(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReverseCommissionDto,
+  ) {
+    const reversed = await this.ledgerService.reverseCommission(id, dto.reason);
+    return { reversed };
+  }
+
+  @Patch('referrals/:id/block')
+  @ApiOperation({
+    summary:
+      'Exclude a referral (fraud, self-referral, chargeback) and reverse its unpaid commissions.',
+  })
+  async blockReferral(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: BlockReferralDto,
+  ) {
+    return this.ledgerService.blockReferral(id, dto.reason);
   }
 
   // ── Manual job triggers ────────────────────────────────

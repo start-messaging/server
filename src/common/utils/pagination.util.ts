@@ -45,8 +45,17 @@ export function resolveSort(
   fallbackKey: string,
   order: string | undefined,
 ): ResolvedSort {
-  const key = requested && requested in whitelist ? requested : fallbackKey;
-  const mapped = whitelist[key] ?? whitelist[fallbackKey];
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so `constructor`,
+  // `toString` and `__proto__` all pass an object-literal allowlist and resolve
+  // to an inherited function, which then reaches ORDER BY as garbage. Every
+  // caller today is additionally guarded by an @IsIn DTO, but the base
+  // PaginationQueryDto types sortBy as a plain @IsString(), so the next
+  // endpoint that forgets one would inherit the hole.
+  const key =
+    requested && Object.hasOwn(whitelist, requested) ? requested : fallbackKey;
+  const mapped = Object.hasOwn(whitelist, key)
+    ? whitelist[key]
+    : whitelist[fallbackKey];
 
   if (!mapped) {
     throw new Error(

@@ -74,10 +74,19 @@ export class AttributionService {
 
   /** Reads the pending attribution code from the request, if any. */
   readCookie(req: Request): string | null {
-    const raw = (req.cookies as Record<string, string> | undefined)?.[
+    const raw = (req.cookies as Record<string, unknown> | undefined)?.[
       REFERRAL_COOKIE
     ];
-    return raw ? this.normalizeCode(raw) : null;
+
+    // Checked rather than cast. `cookie-parser` runs every cookie through
+    // `JSONCookies`, so a value the client prefixes with `j:` comes back
+    // already JSON-parsed — `sm_ref=j%3A1` yields the number 1, and calling
+    // `.trim()` on it throws. This runs in the controller, outside the
+    // try/catch that protects `attributeSignup`, so that TypeError reaches the
+    // exception filter and turns a signup into a 500. `/auth/register` and
+    // `/auth/google` are live endpoints, so an anonymous request could stop
+    // anyone creating an account.
+    return typeof raw === 'string' ? this.normalizeCode(raw) : null;
   }
 
   private setCookie(res: Response, code: string, days: number): void {
@@ -134,8 +143,16 @@ export class AttributionService {
       });
       if (!partner) return null;
 
-      // A partner must not earn commission on their own usage.
-      if (partner.email.toLowerCase() === email.toLowerCase()) {
+      // A partner must not earn commission on their own usage. Compared on a
+      // normalised form, because a plain lowercase match is defeated by the two
+      // cheapest tricks there are: `me+anything@gmail.com` and `m.e@gmail.com`
+      // both deliver to the same inbox but are not string-equal.
+      //
+      // This raises the cost of self-referral; it cannot eliminate it, since a
+      // partner with a second address is indistinguishable from a real
+      // customer at signup. That residual case is what blocking the referral
+      // and reversing its commissions is for.
+      if (normalizeEmail(partner.email) === normalizeEmail(email)) {
         this.logger.warn(
           `Self-referral blocked: partner ${partner.id} signed up with their own link`,
         );
@@ -219,4 +236,32 @@ export class AttributionService {
       .toISOString()
       .slice(0, 10);
   }
+}
+
+/**
+ * Folds the aliasing tricks that make two addresses for one inbox look
+ * different, so a self-referral check can compare them.
+ *
+ * Deliberately conservative: it only removes sub-addressing (`+tag`), which is
+ * near-universal, and dots in the local part for the Google-hosted domains
+ * where they are genuinely ignored. Stripping dots everywhere would merge two
+ * distinct people's addresses on providers that treat them as significant,
+ * which would wrongly deny a real customer their referral.
+ */
+function normalizeEmail(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  const at = trimmed.lastIndexOf('@');
+  if (at <= 0) return trimmed;
+
+  let local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+
+  const plus = local.indexOf('+');
+  if (plus > 0) local = local.slice(0, plus);
+
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    local = local.replaceAll('.', '');
+  }
+
+  return `${local}@${domain}`;
 }

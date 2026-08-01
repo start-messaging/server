@@ -18,10 +18,34 @@ import { ObjectLiteral, SelectQueryBuilder } from 'typeorm';
  * The sort key is (createdAt, id). createdAt alone is not unique — two rows
  * written in the same millisecond would make the boundary ambiguous — so the
  * primary key breaks ties and guarantees a total order.
+ *
+ * PRECISION: the boundary timestamp is read back out of Postgres as text at
+ * full microsecond precision, not via a JS `Date`. `Date` only holds
+ * milliseconds, and `timestamptz` holds microseconds, so encoding the cursor
+ * from an entity would round the boundary *down* — and every row between the
+ * rounded value and the true one then fails the `<` test and is skipped
+ * silently. Rows written by TypeORM carry millisecond precision and hide this,
+ * but anything inserted by raw SQL takes the column's `DEFAULT now()` and has
+ * microseconds; the affiliate ledger is written exactly that way.
  */
 
+/** Raw aliases for the two values the cursor is built from. */
+const CURSOR_TS = 'cursor_ts';
+const CURSOR_ID = 'cursor_id';
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Emits an ISO-8601 string that keeps all six fractional digits. `::text`
+ * would render Postgres' own format, which `Date.parse` is not required to
+ * accept.
+ */
+const cursorTimestampExpr = (alias: string) =>
+  `to_char("${alias}"."createdAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+
 export interface Cursor {
-  /** ISO-8601 timestamp of the boundary row's createdAt. */
+  /** ISO-8601 timestamp of the boundary row's createdAt, microsecond precision. */
   createdAt: string;
   /** Primary key of the boundary row, used to break timestamp ties. */
   id: string;
@@ -71,6 +95,13 @@ export function decodeCursor(raw: string): Cursor {
     throw new BadRequestException('Malformed cursor');
   }
 
+  // The id is interpolated into a `::uuid` cast, so a tampered value that is a
+  // string but not a UUID would otherwise sail through every check here and
+  // fail inside Postgres — surfacing as a 500 for what is a bad request.
+  if (!UUID_PATTERN.test(cursor.id)) {
+    throw new BadRequestException('Malformed cursor');
+  }
+
   return cursor;
 }
 
@@ -86,9 +117,12 @@ export function applyCursor<T extends ObjectLiteral>(
 ): SelectQueryBuilder<T> {
   if (!cursor) return qb;
 
+  // Bound as text and cast in SQL, so the microseconds survive the round trip.
+  // Passing `new Date(...)` here would truncate the boundary to milliseconds
+  // and skip every row in between.
   qb.andWhere(
-    `("${alias}"."createdAt", "${alias}"."id") < (:cursorCreatedAt, :cursorId)`,
-    { cursorCreatedAt: new Date(cursor.createdAt), cursorId: cursor.id },
+    `("${alias}"."createdAt", "${alias}"."id") < ((:cursorCreatedAt)::timestamptz, (:cursorId)::uuid)`,
+    { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
   );
 
   return qb;
@@ -112,25 +146,40 @@ export async function paginateByCursor<
 
   applyCursor(qb, alias, cursor);
 
-  const rows = await qb
+  const { entities: rows, raw } = await qb
+    .addSelect(cursorTimestampExpr(alias), CURSOR_TS)
+    .addSelect(`"${alias}"."id"::text`, CURSOR_ID)
     .orderBy(`${alias}.createdAt`, 'DESC')
     .addOrderBy(`${alias}.id`, 'DESC')
     .take(limit + 1)
-    .getMany();
+    .getRawAndEntities();
 
   const hasNextPage = rows.length > limit;
   const items = hasNextPage ? rows.slice(0, limit) : rows;
   const last = items[items.length - 1];
 
+  if (!hasNextPage || !last) {
+    return { items, hasNextPage, nextCursor: null };
+  }
+
+  // Matched by id rather than by position: a caller whose query joins can get
+  // more raw rows than entities, and indexing into `raw` would then read the
+  // wrong row's timestamp.
+  const boundary = (raw as Record<string, string>[]).find(
+    (r) => r[CURSOR_ID] === last.id,
+  );
+
   return {
     items,
     hasNextPage,
-    nextCursor:
-      hasNextPage && last
-        ? encodeCursor({
-            createdAt: new Date(last.createdAt).toISOString(),
-            id: last.id,
-          })
-        : null,
+    nextCursor: encodeCursor({
+      // The raw projection is the only full-precision source. Falling back to
+      // the entity loses microseconds, so it is used only if the projection is
+      // somehow absent — which would mean paging repeats a row rather than
+      // skipping one, the safer of the two failures.
+      createdAt:
+        boundary?.[CURSOR_TS] ?? new Date(last.createdAt).toISOString(),
+      id: last.id,
+    }),
   };
 }

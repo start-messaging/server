@@ -10,6 +10,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
   ValidateIf,
 } from 'class-validator';
 import { CommissionType } from '../entities/affiliate-settings.entity.js';
@@ -152,6 +153,29 @@ export class UpdatePayoutStatusDto {
   @IsString()
   @MaxLength(2000)
   adminNotes?: string;
+}
+
+/**
+ * A reason is mandatory, not optional like the other admin notes.
+ *
+ * Reversing a commission or blocking a referral takes money off a partner's
+ * balance. When they dispute it, the reason is the only record of why — so it
+ * is required at the point the action is taken rather than reconstructed later.
+ */
+export class ReverseCommissionDto {
+  @ApiProperty({ description: 'Why this commission is being clawed back' })
+  @IsString()
+  @MinLength(3)
+  @MaxLength(2000)
+  reason: string;
+}
+
+export class BlockReferralDto {
+  @ApiProperty({ description: 'Why this referral is being excluded' })
+  @IsString()
+  @MinLength(3)
+  @MaxLength(2000)
+  reason: string;
 }
 
 export class TrackReferralDto {

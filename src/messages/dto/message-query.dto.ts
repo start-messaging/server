@@ -61,7 +61,9 @@ export class MessageQueryDto extends PaginationQueryDto {
    */
   @ApiPropertyOptional({
     description:
-      'Opaque cursor from a previous response. Overrides `page` when set.',
+      'Opaque cursor from a previous response. Overrides `page` when set. ' +
+      'Cursor pages are always ordered by newest first, so `sortBy` and ' +
+      '`sortOrder` cannot be combined with it.',
   })
   @IsOptional()
   @IsString()

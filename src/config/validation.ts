@@ -1,6 +1,18 @@
 import Joi from 'joi';
 
 export const envValidationSchema = Joi.object({
+  /**
+   * Constrained rather than free-form, because a dozen places branch on
+   * `NODE_ENV === 'production'` and every one of them fails *open* on a value
+   * that is merely close: `prod`, `Production` or an unset variable silently
+   * turns off the secure flag on the partner and referral cookies, downgrades
+   * the console-SMS boot alarm to a warning, and re-enables query logging.
+   * Refusing an unknown value at boot is the only place this can be caught.
+   */
+  NODE_ENV: Joi.string()
+    .valid('development', 'test', 'production')
+    .default('development'),
+
   PORT: Joi.number().default(3000),
 
   // Database

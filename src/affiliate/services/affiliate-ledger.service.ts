@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import {
   CommissionStatus,
   PartnerCommission,
@@ -13,6 +13,7 @@ import {
   PartnerPayout,
   PayoutStatus,
 } from '../entities/partner-payout.entity.js';
+import { Referral, ReferralStatus } from '../entities/referral.entity.js';
 import { paginateQueryBuilder } from '../../common/utils/pagination.util.js';
 
 /** Read-side for the commission ledger and payout history. */
@@ -90,6 +91,21 @@ export class AffiliateLedgerService {
     return paginateQueryBuilder(qb, { page, limit, withCount });
   }
 
+  /**
+   * Drops the admin-only columns from a payout before a partner sees it.
+   *
+   * `adminNotes` is written about the partner during review, and
+   * `processedByAdminId` identifies a staff member — neither belongs in a
+   * partner response. `failureReason` is kept deliberately: when a transfer
+   * bounces, that is the one thing the partner actually needs told.
+   */
+  sanitizePayoutForPartner(payout: PartnerPayout) {
+    const safe: Partial<PartnerPayout> = { ...payout };
+    delete safe.adminNotes;
+    delete safe.processedByAdminId;
+    return safe;
+  }
+
   async findPayout(id: string, partnerId?: string): Promise<PartnerPayout> {
     const payout = await this.payoutRepo.findOne({
       where: partnerId ? { id, partnerId } : { id },
@@ -104,6 +120,21 @@ export class AffiliateLedgerService {
    * Settling also moves the partner's cached paid/unpaid split, but only on
    * the transition into PAID — re-saving an already-paid payout must not
    * double-count.
+   *
+   * The whole thing is one transaction, and the payout row is locked for its
+   * duration, for two reasons:
+   *
+   *  - **The transition guard has to hold.** Read-check-write without a lock
+   *    lets two admins actioning the same payout both read PENDING, both pass
+   *    `assertTransitionAllowed`, and both write — so a payout can be marked
+   *    PAID and FAILED by racing requests, releasing commissions that a
+   *    settled payout claims to have sent.
+   *  - **Failure and refund must commit together.** Moving to FAILED returns
+   *    the commissions to the unpaid pool. Committing the status separately
+   *    from the release leaves a window where a crash strands the money:
+   *    the payout reads FAILED while its commissions stay `paid`, and
+   *    `reconcilePartnerTotals` cannot repair it because it recomputes *from*
+   *    the ledger, which still says paid.
    */
   async updatePayoutStatus(
     id: string,
@@ -115,29 +146,46 @@ export class AffiliateLedgerService {
       adminId?: string;
     },
   ): Promise<PartnerPayout> {
-    const payout = await this.findPayout(id);
-    this.assertTransitionAllowed(payout.status, patch.status);
+    return this.payoutRepo.manager.transaction(async (manager) => {
+      const [locked] = await manager.query<PartnerPayout[]>(
+        `SELECT * FROM "partner_payouts" WHERE "id" = $1 FOR UPDATE`,
+        [id],
+      );
+      if (!locked) throw new NotFoundException('Payout not found');
 
-    const update: Partial<PartnerPayout> = {
-      status: patch.status,
-      processedByAdminId: patch.adminId ?? payout.processedByAdminId,
-    };
+      this.assertTransitionAllowed(locked.status, patch.status);
 
-    if (patch.paymentReference !== undefined) {
-      update.paymentReference = patch.paymentReference;
-    }
-    if (patch.failureReason !== undefined) {
-      update.failureReason = patch.failureReason;
-    }
-    if (patch.adminNotes !== undefined) {
-      update.adminNotes = patch.adminNotes;
-    }
-    if (patch.status === PayoutStatus.PAID && !payout.paidAt) {
-      update.paidAt = new Date();
-    }
+      const update: Partial<PartnerPayout> = {
+        status: patch.status,
+        processedByAdminId: patch.adminId ?? locked.processedByAdminId,
+      };
 
-    await this.payoutRepo.update({ id }, update);
-    return this.findPayout(id);
+      if (patch.paymentReference !== undefined) {
+        update.paymentReference = patch.paymentReference;
+      }
+      if (patch.failureReason !== undefined) {
+        update.failureReason = patch.failureReason;
+      }
+      if (patch.adminNotes !== undefined) {
+        update.adminNotes = patch.adminNotes;
+      }
+      if (patch.status === PayoutStatus.PAID && !locked.paidAt) {
+        update.paidAt = new Date();
+      }
+
+      await manager.getRepository(PartnerPayout).update({ id }, update);
+
+      // Same transaction as the status write. Idempotent, so re-PATCHing
+      // FAILED -> FAILED (which the `from === to` early return permits) is a
+      // safe way to finish a release that an older deploy left half-done.
+      if (patch.status === PayoutStatus.FAILED) {
+        await this.releaseWithin(manager, id, locked.partnerId);
+      }
+
+      return manager
+        .getRepository(PartnerPayout)
+        .findOneOrFail({ where: { id } });
+    });
   }
 
   /**
@@ -188,6 +236,153 @@ export class AffiliateLedgerService {
   }
 
   /**
+   * Claws back a single commission — refund, chargeback or fraud.
+   *
+   * Only `accrued` rows can be reversed. Once a commission is `paid` the money
+   * has left, and silently flipping the row would make the ledger disagree with
+   * a payout that really was sent; recovering that is a deliberate act against
+   * the partner's future balance, not a status edit.
+   *
+   * Reversed rows are excluded from every total reconciliation computes, so the
+   * cached columns are moved by the same amount here to keep the two in step
+   * between reconcile runs.
+   */
+  async reverseCommission(id: string, reason: string): Promise<number> {
+    return this.commissionRepo.manager.transaction(async (manager) => {
+      const commission = await manager
+        .getRepository(PartnerCommission)
+        .findOne({ where: { id } });
+      if (!commission) throw new NotFoundException('Commission not found');
+
+      // Partner row first, matching the order `settlePartner` takes, so a
+      // reversal racing a payout run cannot deadlock with it.
+      await manager.query(
+        `SELECT 1 FROM "partners" WHERE "id" = $1 FOR UPDATE`,
+        [commission.partnerId],
+      );
+
+      // Re-read under the lock: a payout run may have swept this row into a
+      // payout between the read above and the lock being granted.
+      const [current] = await manager.query<{ status: CommissionStatus }[]>(
+        `SELECT "status" FROM "partner_commissions" WHERE "id" = $1`,
+        [id],
+      );
+
+      if (current?.status === CommissionStatus.REVERSED) return 0;
+      if (current?.status === CommissionStatus.PAID) {
+        throw new BadRequestException(
+          'This commission has already been paid out and cannot be reversed. ' +
+            'Recover it by adjusting the partner’s future balance instead.',
+        );
+      }
+
+      return this.reverseWithin(
+        manager,
+        `"id" = $1`,
+        [id],
+        commission.partnerId,
+        reason,
+      );
+    });
+  }
+
+  /**
+   * Reverses every still-accrued commission matching `predicate` and moves the
+   * partner's cached totals by the sum actually reversed.
+   *
+   * The caller must already hold the partner row lock. `predicate` is a fixed
+   * string written at a call site, never anything caller-supplied — the values
+   * it references are bound parameters.
+   */
+  private async reverseWithin(
+    manager: EntityManager,
+    predicate: string,
+    params: unknown[],
+    partnerId: string,
+    reason: string,
+  ): Promise<number> {
+    const [reversed] = await manager.query<{ count: string; total: string }[]>(
+      `WITH reversed AS (
+         UPDATE "partner_commissions"
+            SET "status" = 'reversed',
+                "reversedReason" = $${params.length + 1},
+                "updatedAt" = now()
+          WHERE ${predicate}
+            AND "status" = 'accrued'
+            AND "deletedAt" IS NULL
+        RETURNING "amount"
+       )
+       SELECT COUNT(*)::int AS count, COALESCE(SUM("amount"), 0) AS total
+         FROM reversed`,
+      [...params, reason],
+    );
+
+    const count = Number(reversed?.count ?? 0);
+    if (count === 0) return 0;
+
+    await manager.query(
+      `UPDATE "partners"
+          SET "unpaidEarnings"   = "unpaidEarnings"   - $2,
+              "lifetimeEarnings" = "lifetimeEarnings" - $2,
+              "updatedAt"        = now()
+        WHERE "id" = $1`,
+      [partnerId, reversed.total],
+    );
+
+    return count;
+  }
+
+  /**
+   * Excludes a referral from the programme and claws back what it earned.
+   *
+   * This is the fraud and self-referral remedy. The accrual query already skips
+   * blocked referrals, so blocking stops future earnings; reversing the unpaid
+   * ones in the same transaction is what stops the existing balance from being
+   * paid out at the end of the month. Commissions already paid are left alone
+   * and reported back, because that money is gone and the caller needs to know.
+   */
+  async blockReferral(
+    id: string,
+    reason: string,
+  ): Promise<{ reversed: number; alreadyPaid: number }> {
+    return this.commissionRepo.manager.transaction(async (manager) => {
+      const referral = await manager
+        .getRepository(Referral)
+        .findOne({ where: { id } });
+      if (!referral) throw new NotFoundException('Referral not found');
+
+      await manager.query(
+        `SELECT 1 FROM "partners" WHERE "id" = $1 FOR UPDATE`,
+        [referral.partnerId],
+      );
+
+      const [{ paid }] = await manager.query<{ paid: string }[]>(
+        `SELECT COUNT(*)::int AS paid FROM "partner_commissions"
+          WHERE "referralId" = $1 AND "status" = 'paid' AND "deletedAt" IS NULL`,
+        [id],
+      );
+
+      const reversed = await this.reverseWithin(
+        manager,
+        `"referralId" = $1`,
+        [id],
+        referral.partnerId,
+        reason,
+      );
+
+      await manager.getRepository(Referral).update(
+        { id },
+        {
+          status: ReferralStatus.BLOCKED,
+          blockedReason: reason,
+        },
+      );
+
+      return { reversed, alreadyPaid: Number(paid) };
+    });
+  }
+
+  /**
    * Returns commissions to the unpaid pool when a payout fails.
    *
    * Without this, a failed bank transfer would leave the money marked `paid`
@@ -196,41 +391,60 @@ export class AffiliateLedgerService {
    */
   async releaseFailedPayout(id: string): Promise<number> {
     const payout = await this.findPayout(id);
+    return this.commissionRepo.manager.transaction((manager) =>
+      this.releaseWithin(manager, id, payout.partnerId),
+    );
+  }
 
-    const released = await this.commissionRepo.manager.transaction(
-      async (manager) => {
-        // Ends in a SELECT: a bare `UPDATE … RETURNING` comes back from
-        // TypeORM as `[rows, affectedCount]`, so `.length` would report 2
-        // whether one row was released or a thousand.
-        const [released] = await manager.query<{ count: string }[]>(
-          `WITH released AS (
-             UPDATE "partner_commissions"
-                SET "status" = 'accrued', "payoutId" = NULL, "updatedAt" = now()
-              WHERE "payoutId" = $1 AND "status" = 'paid'
-            RETURNING "id"
-           )
-           SELECT COUNT(*)::int AS count FROM released`,
-          [id],
-        );
-
-        const count = Number(released?.count ?? 0);
-
-        if (count > 0) {
-          await manager.query(
-            `UPDATE "partners"
-                SET "unpaidEarnings" = "unpaidEarnings" + $2,
-                    "paidEarnings"   = "paidEarnings"   - $2,
-                    "updatedAt"      = now()
-              WHERE "id" = $1`,
-            [payout.partnerId, payout.amount],
-          );
-        }
-
-        return count;
-      },
+  /**
+   * The release itself, on a caller-supplied transaction.
+   *
+   * Idempotent by predicate: it only touches rows that are still `paid` under
+   * this payout, so running it twice releases nothing the second time and
+   * leaves the cached totals alone.
+   *
+   * The partner's cached balance is moved by the sum of the rows actually
+   * released, not by `payout.amount`. Those are equal in the normal case, but
+   * only the ledger sum stays correct if a row was already released or soft
+   * deleted — using the payout total there would push the cache out of step
+   * with the ledger, which is exactly the drift these columns must not have.
+   */
+  private async releaseWithin(
+    manager: EntityManager,
+    payoutId: string,
+    partnerId: string,
+  ): Promise<number> {
+    // Ordered after the payout lock and before the partner write, matching the
+    // lock order `settlePartner` takes (partner row first, payouts read
+    // unlocked) so the two cannot deadlock.
+    const [released] = await manager.query<{ count: string; total: string }[]>(
+      // Ends in a SELECT: a bare `UPDATE … RETURNING` comes back from TypeORM
+      // as `[rows, affectedCount]`, so `.length` would report 2 whether one
+      // row was released or a thousand.
+      `WITH released AS (
+         UPDATE "partner_commissions"
+            SET "status" = 'accrued', "payoutId" = NULL, "updatedAt" = now()
+          WHERE "payoutId" = $1 AND "status" = 'paid' AND "deletedAt" IS NULL
+        RETURNING "amount"
+       )
+       SELECT COUNT(*)::int AS count, COALESCE(SUM("amount"), 0) AS total
+         FROM released`,
+      [payoutId],
     );
 
-    return released;
+    const count = Number(released?.count ?? 0);
+    if (count === 0) return 0;
+
+    await manager.query(
+      `UPDATE "partners"
+          SET "unpaidEarnings" = "unpaidEarnings" + $2,
+              "paidEarnings"   = "paidEarnings"   - $2,
+              "updatedAt"      = now()
+        WHERE "id" = $1`,
+      [partnerId, released.total],
+    );
+
+    return count;
   }
 
   /** Programme-wide totals for the admin dashboard. */
