@@ -1,29 +1,35 @@
 /**
- * Works out what to charge a customer so that the merchant nets the top-up.
+ * Works out the surcharge added to a top-up.
  *
- * The naive approach — add 2% to the requested amount — does not do that, and
- * the gap is not rounding. The gateway takes its cut of the total it processes,
- * including the surcharge itself:
+ * Two modes, because they answer different questions.
  *
- *   request ₹1,000, charge ₹1,020, gateway takes 2% of ₹1,020 = ₹20.40
- *   → merchant nets ₹999.60, still 40 paise short of the ₹1,000 credited.
+ * SIMPLE (default) — add `percent` to what the customer asked for:
  *
- * Solving for the charge that nets the requested amount is the gross-up:
+ *   request ₹1,000 at 2% → fee ₹20.00, customer pays ₹1,020.00
+ *
+ *   Round numbers, and trivial to explain on a receipt. It does not recover
+ *   the cost exactly: the gateway takes its cut of the ₹1,020 it processes,
+ *   not of the ₹1,000 credited, and it charges GST on that cut. At 2% + 18%
+ *   GST the merchant nets ₹995.93 on a ₹1,000 credit — around ₹4 short. Set
+ *   `percent` to 2.36 to cover the tax as well, or use GROSS_UP to be exact.
+ *
+ * GROSS_UP — charge whatever nets the requested amount:
  *
  *   charged = amount / (1 - rate)
+ *   request ₹1,000 at 2% + 18% GST → fee ₹24.17, customer pays ₹1,024.17
+ *   → merchant nets exactly ₹1,000.00
  *
- *   request ₹1,000, charge ₹1,020.41, gateway takes ₹20.41
- *   → merchant nets exactly ₹1,000.
- *
- * `rate` includes GST, because the gateway charges tax on its fee and that is
- * part of what leaves the merchant's account.
+ *   Exact, at the cost of a total nobody can do in their head.
  */
+
+export type ConvenienceFeeMode = 'simple' | 'gross_up';
 
 export interface ConvenienceFeeConfig {
   enabled: boolean;
-  /** Gateway fee, as a percentage of the processed amount. */
+  mode: ConvenienceFeeMode;
+  /** The surcharge rate. In SIMPLE mode this is exactly what gets added. */
   percent: number;
-  /** Tax charged on top of that fee, as a percentage of the fee. */
+  /** Tax the gateway charges on its fee. Only used by GROSS_UP. */
   gstPercent: number;
 }
 
@@ -47,6 +53,15 @@ export function calculateConvenienceFee(
 ): FeeBreakdown {
   if (!config.enabled || config.percent <= 0) {
     return { amount, convenienceFee: 0, chargedAmount: amount };
+  }
+
+  if (config.mode === 'simple') {
+    const convenienceFee = toPaise((amount * config.percent) / 100);
+    return {
+      amount,
+      convenienceFee,
+      chargedAmount: toPaise(amount + convenienceFee),
+    };
   }
 
   const rate = (config.percent / 100) * (1 + config.gstPercent / 100);

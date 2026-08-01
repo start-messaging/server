@@ -37,6 +37,7 @@ export class PaymentsService {
     return (
       this.config.get<ConvenienceFeeConfig>('payments.convenienceFee') ?? {
         enabled: false,
+        mode: 'simple',
         percent: 0,
         gstPercent: 0,
       }

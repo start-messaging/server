@@ -62,6 +62,9 @@ export const envValidationSchema = Joi.object({
   CONVENIENCE_FEE_ENABLED: Joi.boolean().default(false),
   // Capped well below anything defensible: a fat-fingered 20 instead of 2
   // would quietly overcharge every top-up.
+  CONVENIENCE_FEE_MODE: Joi.string()
+    .valid('simple', 'gross_up')
+    .default('simple'),
   CONVENIENCE_FEE_PERCENT: Joi.number().min(0).max(10).default(2),
   CONVENIENCE_FEE_GST_PERCENT: Joi.number().min(0).max(30).default(18),
 

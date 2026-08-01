@@ -68,19 +68,23 @@ export default () => ({
      * charged, so it must be switched on knowingly rather than arriving with a
      * deploy.
      *
-     * `gstPercent` is charged by the gateway on top of its own fee, so leaving
-     * it at 0 means still absorbing that part. Razorpay's published rate is 2%
-     * across domestic cards, UPI, netbanking and wallets, with GST on the fee.
+     * Razorpay's published rate is 2% across domestic cards, UPI, netbanking
+     * and wallets, with GST charged on that fee.
      *
      * NOTE: UPI carries zero MDR in India and merchants are not permitted to
      * levy a charge on it. The payment method is not known when the order is
      * created — the customer picks it afterwards, inside Razorpay Checkout —
      * so a surcharge configured here necessarily applies to UPI as well.
-     * `exemptWhenMethodUnknown` is the switch to turn that off wholesale once
-     * the top-up flow is able to ask for the method first.
+     * Charging per method would mean asking for it before the order exists.
      */
     convenienceFee: {
       enabled: process.env.CONVENIENCE_FEE_ENABLED === 'true',
+      // `simple` adds the percentage to what the customer asked for, which is
+      // a round number they can check. `gross_up` charges whatever nets the
+      // top-up exactly, which is precise but unmemorable.
+      mode: (process.env.CONVENIENCE_FEE_MODE ?? 'simple') as
+        | 'simple'
+        | 'gross_up',
       percent: Number(process.env.CONVENIENCE_FEE_PERCENT ?? 2),
       gstPercent: Number(process.env.CONVENIENCE_FEE_GST_PERCENT ?? 18),
     },

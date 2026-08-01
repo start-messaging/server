@@ -16,10 +16,57 @@ import { calculateConvenienceFee } from '../src/payments/convenience-fee.js';
  * on a live order would need a real gateway to take a real fee.
  */
 test.describe('convenience fee arithmetic', () => {
-  const RATE = { enabled: true, percent: 2, gstPercent: 18 };
+  /** What the business actually runs: a flat 2% added to the top-up. */
+  const SIMPLE = {
+    enabled: true,
+    mode: 'simple' as const,
+    percent: 2,
+    gstPercent: 18,
+  };
+  /** The exact-netting alternative, kept available but not the default. */
+  const RATE = {
+    enabled: true,
+    mode: 'gross_up' as const,
+    percent: 2,
+    gstPercent: 18,
+  };
+
+  test('simple mode adds exactly the percentage, in round numbers', () => {
+    expect(calculateConvenienceFee(1000, SIMPLE)).toEqual({
+      amount: 1000,
+      convenienceFee: 20,
+      chargedAmount: 1020,
+    });
+    expect(calculateConvenienceFee(2500, SIMPLE)).toEqual({
+      amount: 2500,
+      convenienceFee: 50,
+      chargedAmount: 2550,
+    });
+  });
+
+  test('simple mode reconciles and lands on whole paise', () => {
+    for (const amount of [1000, 1500, 3333, 9999, 12_345]) {
+      const f = calculateConvenienceFee(amount, SIMPLE);
+      expect(f.amount + f.convenienceFee).toBeCloseTo(f.chargedAmount, 4);
+      expect(Math.round(f.chargedAmount * 100) / 100).toBe(f.chargedAmount);
+    }
+  });
+
+  test('simple mode does not fully recover the cost, and that is known', () => {
+    // Recorded so the trade-off is visible rather than discovered later: a
+    // flat 2% leaves the gateway's GST, and its cut of the surcharge itself,
+    // with the business. Raising `percent` to 2.36 or switching to gross_up
+    // are the two ways to close it.
+    const trueRate = 0.0236;
+    const f = calculateConvenienceFee(1000, SIMPLE);
+    const net = f.chargedAmount - f.chargedAmount * trueRate;
+
+    expect(net).toBeLessThan(1000);
+    expect(net).toBeGreaterThan(995);
+  });
 
   test('is off unless explicitly enabled', () => {
-    const off = calculateConvenienceFee(1000, { ...RATE, enabled: false });
+    const off = calculateConvenienceFee(1000, { ...SIMPLE, enabled: false });
     expect(off.convenienceFee).toBe(0);
     expect(off.chargedAmount).toBe(1000);
     expect(off.amount).toBe(1000);
@@ -81,6 +128,7 @@ test.describe('convenience fee arithmetic', () => {
     // safe answer rather than an infinity reaching the gateway.
     const f = calculateConvenienceFee(1000, {
       enabled: true,
+      mode: 'gross_up',
       percent: 100,
       gstPercent: 18,
     });
