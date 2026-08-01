@@ -18,7 +18,28 @@ export class AffiliateSchedulerService implements OnModuleInit {
     private readonly settingsService: AffiliateSettingsService,
   ) {}
 
+  /**
+   * Whether this process should own the repeatable jobs.
+   *
+   * Off, the API still serves every route and the admin "run now" endpoints
+   * still work — only the timers are absent. That is what an end-to-end suite
+   * needs (a background accrual firing mid-test consumes the watermark and
+   * makes assertions race), and it is also the shape of a deployment that
+   * wants its workers on separate instances from its web tier.
+   */
+  private get schedulingEnabled(): boolean {
+    return process.env.AFFILIATE_SCHEDULER_ENABLED !== 'false';
+  }
+
   onModuleInit(): void {
+    if (!this.schedulingEnabled) {
+      this.logger.warn(
+        'AFFILIATE_SCHEDULER_ENABLED=false — repeatable affiliate jobs not registered. ' +
+          'Accrual and payouts will only run when triggered manually.',
+      );
+      return;
+    }
+
     // Retried in the background rather than awaited once. A single failed
     // attempt used to be the end of it: the error was logged, boot continued,
     // and the repeatable jobs were never registered again for the life of the
@@ -57,6 +78,10 @@ export class AffiliateSchedulerService implements OnModuleInit {
    * changes, since that interval is baked into the schedule.
    */
   async syncSchedules(): Promise<boolean> {
+    // Also guarded here, not just at boot: an admin changing the accrual
+    // interval calls straight into this.
+    if (!this.schedulingEnabled) return true;
+
     try {
       const settings = await this.settingsService.get();
 

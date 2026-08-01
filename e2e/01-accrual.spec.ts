@@ -228,7 +228,7 @@ test.describe('commission accrual', () => {
 
     await seedCompletedPayment(user.id);
     const run = await runAccrual(request, admin.accessToken);
-    expect(run.newlyQualified ?? 1).toBeGreaterThanOrEqual(1);
+    expect(run.newlyQualified).toBeGreaterThanOrEqual(1);
 
     [referral] = await sql<{ status: string }>(
       `SELECT "status" FROM "referrals" WHERE "userId" = $1`,

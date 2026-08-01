@@ -31,7 +31,12 @@ export default defineConfig({
   webServer: {
     // Runs the compiled output rather than `nest start`, so the suite exercises
     // the same artifact a deploy would.
-    command: 'node dist/main.js',
+    //
+    // Output is teed to a file because one of the things under test is what
+    // the logs contain: the interceptor writes every request body to stdout and
+    // to the analytics exporter, so "a partner's bank details never appear in
+    // a log line" is an assertion, not an assumption.
+    command: `node dist/main.js > ${process.env.E2E_SERVER_LOG ?? 'e2e-server.log'} 2>&1`,
     url: `${BASE_URL}/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

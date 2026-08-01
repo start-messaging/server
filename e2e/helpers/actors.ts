@@ -247,6 +247,7 @@ export async function runAccrual(api: APIRequestContext, adminToken: string) {
   return payload<{
     skipped: boolean;
     reason?: string;
+    newlyQualified: number;
     commissionsCreated: number;
     totalAccrued: number;
     partnersCredited: number;

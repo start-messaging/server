@@ -73,9 +73,23 @@ export class AffiliateSettingsService {
     // lastAccrualAt is the accrual watermark, owned by the accrual job.
     delete patch.lastAccrualAt;
 
-    this.assertInvariants({ ...current, ...patch });
+    // Keys explicitly present in the patch, dropping the ones the DTO declares
+    // but the request omitted.
+    //
+    // A plain `{ ...current, ...patch }` is wrong here: class-transformer
+    // materialises every declared optional property, so a PATCH carrying only
+    // `accrualLookbackHours` still spreads `accrualIntervalHours: undefined`
+    // over the stored 48. The invariant then compares `12 < undefined`, which
+    // is false rather than an error, so the check waved through exactly the
+    // inversion it exists to stop and the database constraint rejected it as a
+    // 500 instead of a 400.
+    const changes = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as Partial<AffiliateSettings>;
 
-    await this.repo.update({ id: current.id }, patch);
+    this.assertInvariants({ ...current, ...changes });
+
+    await this.repo.update({ id: current.id }, changes);
     this.invalidate();
     return this.get();
   }

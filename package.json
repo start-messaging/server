@@ -22,7 +22,9 @@
     "migration:create": "npx typeorm migration:create",
     "migration:run": "npm run build && npx typeorm migration:run -d dist/database/data-source.js",
     "migration:revert": "npm run build && npx typeorm migration:revert -d dist/database/data-source.js",
-    "migration:show": "npm run build && npx typeorm migration:show -d dist/database/data-source.js"
+    "migration:show": "npm run build && npx typeorm migration:show -d dist/database/data-source.js",
+    "test:e2e:api": "playwright test",
+    "test:e2e:api:ui": "playwright test --ui"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1004.0",
