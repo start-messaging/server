@@ -27,6 +27,9 @@ export interface PartnerJwtPayload {
 export const PARTNER_TOKEN_AUDIENCE = 'partner';
 export const PARTNER_REFRESH_COOKIE = 'partner_refresh_token';
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class PartnerAuthService {
   constructor(
@@ -155,15 +158,34 @@ export class PartnerAuthService {
     };
   }
 
+  /**
+   * Splits the `${partnerId}:${token}` refresh cookie.
+   *
+   * Takes `unknown`, and validates the id half, for the same two reasons the
+   * customer equivalent does — this endpoint is unauthenticated, so both were
+   * reachable by anyone with curl:
+   *
+   *  - `cookie-parser` runs every cookie through `JSONCookies`, so a value the
+   *    client prefixes with `j:` arrives already parsed. `partner_refresh_token=j%3A1`
+   *    became the number 1, and `.indexOf` on it threw.
+   *  - the id half goes straight into a lookup on a uuid column, so
+   *    `partner_refresh_token=x:y` reached Postgres as a cast error.
+   *
+   * Both surfaced as a 500. A malformed cookie is a rejected credential.
+   */
   parseRefreshCookie(
-    cookie: string,
+    cookie: unknown,
   ): { partnerId: string; token: string } | null {
+    if (typeof cookie !== 'string') return null;
+
     const separator = cookie.indexOf(':');
     if (separator <= 0) return null;
-    return {
-      partnerId: cookie.slice(0, separator),
-      token: cookie.slice(separator + 1),
-    };
+
+    const partnerId = cookie.slice(0, separator);
+    const token = cookie.slice(separator + 1);
+    if (!token || !UUID_PATTERN.test(partnerId)) return null;
+
+    return { partnerId, token };
   }
 
   /**

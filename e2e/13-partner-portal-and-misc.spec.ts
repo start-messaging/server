@@ -29,9 +29,15 @@ test.describe('partner session', () => {
     await closeDb();
   });
 
+  // The server's cookie is `partner_refresh_token` (PARTNER_REFRESH_COOKIE in
+  // partner-auth.service.ts). An earlier version of this file used
+  // `partner_refresh`, so every request below carried no cookie at all and the
+  // malformed-cookie test passed while exercising nothing.
+  const PARTNER_REFRESH_COOKIE = 'partner_refresh_token';
+
   function partnerRefreshCookie(headers: Record<string, string>): string | null {
     const raw = headers['set-cookie'] ?? '';
-    const match = /partner_refresh(?:_token)?=([^;]+)/.exec(raw);
+    const match = new RegExp(`${PARTNER_REFRESH_COOKIE}=([^;]+)`).exec(raw);
     return match ? match[1] : null;
   }
 
@@ -83,7 +89,7 @@ test.describe('partner session', () => {
     test.skip(!first, 'partner refresh is not cookie-based in this build');
 
     const refreshed = await request.post('/partner/auth/refresh', {
-      headers: { Cookie: `partner_refresh=${first}` },
+      headers: { Cookie: `${PARTNER_REFRESH_COOKIE}=${first}` },
     });
     if (!refreshed.ok()) {
       // Cookie name differs; the rotation itself is covered by the DB assertion
@@ -93,7 +99,7 @@ test.describe('partner session', () => {
     }
 
     const replay = await request.post('/partner/auth/refresh', {
-      headers: { Cookie: `partner_refresh=${first}` },
+      headers: { Cookie: `${PARTNER_REFRESH_COOKIE}=${first}` },
     });
     expect(replay.ok(), 'a rotated partner refresh token was reused').toBeFalsy();
   });
@@ -101,13 +107,20 @@ test.describe('partner session', () => {
   test('a malformed partner refresh cookie is not a server error', async ({
     request,
   }) => {
-    for (const value of ['garbage', 'j%3A1', 'not-a-uuid:token', '']) {
+    for (const value of [
+      'garbage',
+      'j%3A1',
+      'not-a-uuid:token',
+      ':',
+      `${'0'.repeat(8)}-0000-4000-8000-000000000000:`,
+      '',
+    ]) {
       const res = await request.post('/partner/auth/refresh', {
-        headers: { Cookie: `partner_refresh=${value}` },
+        headers: { Cookie: `${PARTNER_REFRESH_COOKIE}=${value}` },
       });
       expect(
         res.status(),
-        `partner_refresh=${value} produced a server error`,
+        `${PARTNER_REFRESH_COOKIE}=${value} produced a server error`,
       ).toBeLessThan(500);
     }
   });
