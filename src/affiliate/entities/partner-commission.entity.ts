@@ -3,6 +3,7 @@ import { BaseEntity } from '../../common/entities/base.entity.js';
 import { Partner } from './partner.entity.js';
 import { Referral } from './referral.entity.js';
 import { CommissionType } from './affiliate-settings.entity.js';
+import { DecimalTransformer } from '../../common/transformers/decimal.transformer.js';
 
 export enum CommissionStatus {
   /** Earned and counted in unpaid earnings. */
@@ -58,7 +59,12 @@ export class PartnerCommission extends BaseEntity {
   messageId: string;
 
   /** The message's cost — the amount commission was calculated from. */
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    transformer: DecimalTransformer,
+  })
   baseAmount: number;
 
   /**
@@ -70,10 +76,20 @@ export class PartnerCommission extends BaseEntity {
   @Column({ type: 'enum', enum: CommissionType })
   rateType: CommissionType;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    transformer: DecimalTransformer,
+  })
   rateValue: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    transformer: DecimalTransformer,
+  })
   amount: number;
 
   @Column({

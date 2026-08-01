@@ -311,11 +311,20 @@ test.describe('channels, dashboard, payments and webhooks', () => {
     const res = await request.post('/payments/webhook/razorpay', {
       data: { event: 'payment.captured', payload: {} },
     });
-    expect(
-      res.ok(),
-      'an unsigned gateway webhook was accepted',
-    ).toBeFalsy();
-    expect(res.status()).toBeLessThan(500);
+
+    // A 2xx is correct here and is not the same as "accepted": a non-2xx makes
+    // the gateway retry, and an invalid signature is not a transient failure
+    // worth retrying. What matters is that the payload was not *processed* —
+    // the handler reports that as received:false.
+    expect(res.status(), 'an unsigned webhook should not be a server error').toBeLessThan(500);
+    const body = await payload<{ received: boolean }>(res);
+    expect(body.received, 'an unsigned gateway webhook was processed').toBe(false);
+
+    // And nothing was written.
+    const [{ count }] = await sql<{ count: string }>(
+      `SELECT COUNT(*)::int AS count FROM "payments" WHERE "status" = 'completed'`,
+    );
+    expect(Number(count)).toBe(0);
   });
 
   test('the 2factor webhook does not fall over on junk', async ({

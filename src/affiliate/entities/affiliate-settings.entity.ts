@@ -1,5 +1,6 @@
 import { Column, Entity } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
+import { DecimalTransformer } from '../../common/transformers/decimal.transformer.js';
 
 export enum CommissionType {
   /** Commission is a percentage of the referred user's OTP spend. */
@@ -43,7 +44,13 @@ export class AffiliateSettings extends BaseEntity {
    * Percentage (e.g. 10.0000 = 10%) when type is PERCENT, or rupees per
    * delivered OTP when type is FLAT. A partner row may override this.
    */
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 10 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    default: 10,
+    transformer: DecimalTransformer,
+  })
   defaultCommissionRate: number;
 
   // ── Payout eligibility ─────────────────────────────────
@@ -53,7 +60,13 @@ export class AffiliateSettings extends BaseEntity {
   minPaidReferrals: number;
 
   /** Unpaid earnings must reach this before a payout is raised. */
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 1000 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    default: 1000,
+    transformer: DecimalTransformer,
+  })
   minPayoutAmount: number;
 
   /** Day of month the payout run targets. */

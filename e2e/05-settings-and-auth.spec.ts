@@ -271,6 +271,54 @@ test.describe('authorization boundaries', () => {
     }
   });
 
+  test('suspending a partner invalidates their existing access token', async ({
+    request,
+  }) => {
+    // Before: clearing the refresh hash stopped them renewing, but the access
+    // token already in hand stayed good for its full hour — long enough for a
+    // partner suspended for fraud to rewrite the bank details a later
+    // reinstatement would pay into.
+    const before = await request.get('/partner/auth/me', {
+      headers: auth(partner.accessToken),
+    });
+    expect(before.ok(), await before.text()).toBeTruthy();
+
+    await sql(`UPDATE "partners" SET "status" = 'suspended' WHERE "id" = $1`, [
+      partner.id,
+    ]);
+
+    for (const path of [
+      '/partner/auth/me',
+      '/partner/dashboard',
+      '/partner/commissions',
+      '/partner/payouts',
+    ]) {
+      const res = await request.get(path, { headers: auth(partner.accessToken) });
+      expect([401, 403], `${path} still served a suspended partner`).toContain(
+        res.status(),
+      );
+    }
+
+    // And they cannot change where money would be sent.
+    const write = await request.patch('/partner/payout-details', {
+      data: { payoutMethod: 'upi', upiId: 'attacker@okaxis' },
+      headers: auth(partner.accessToken),
+    });
+    expect([401, 403]).toContain(write.status());
+  });
+
+  test('a rejected partner is likewise cut off immediately', async ({
+    request,
+  }) => {
+    await sql(`UPDATE "partners" SET "status" = 'rejected' WHERE "id" = $1`, [
+      partner.id,
+    ]);
+    const res = await request.get('/partner/auth/me', {
+      headers: auth(partner.accessToken),
+    });
+    expect([401, 403]).toContain(res.status());
+  });
+
   test('partner login does not reveal whether an account exists', async ({
     request,
   }) => {

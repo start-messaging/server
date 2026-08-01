@@ -1,6 +1,7 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
 import { Partner, PayoutMethod } from './partner.entity.js';
+import { DecimalTransformer } from '../../common/transformers/decimal.transformer.js';
 
 export enum PayoutStatus {
   /** Raised by the monthly run, awaiting an admin to send the money. */
@@ -51,7 +52,12 @@ export class PartnerPayout extends BaseEntity {
   @Column({ type: 'timestamptz' })
   periodEnd: Date;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    transformer: DecimalTransformer,
+  })
   amount: number;
 
   /** How many commission rows this payout settles. */

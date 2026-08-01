@@ -1,6 +1,7 @@
 import { Column, Entity, Index } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
 import { CommissionType } from './affiliate-settings.entity.js';
+import { DecimalTransformer } from '../../common/transformers/decimal.transformer.js';
 
 export enum PartnerStatus {
   /** Signed up, awaiting admin approval. Links do not attribute yet. */
@@ -76,7 +77,13 @@ export class Partner extends BaseEntity {
   @Column({ type: 'enum', enum: CommissionType, nullable: true })
   commissionType: CommissionType | null;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    nullable: true,
+    transformer: DecimalTransformer,
+  })
   commissionRate: number | null;
 
   // ── Payout details ─────────────────────────────────────
@@ -116,14 +123,32 @@ export class Partner extends BaseEntity {
   // dashboard, never the source of truth: every figure can be rebuilt by
   // summing partner_commissions, and a reconciliation check does exactly that.
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    default: 0,
+    transformer: DecimalTransformer,
+  })
   lifetimeEarnings: number;
 
   /** Earned, not yet included in a payout. */
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    default: 0,
+    transformer: DecimalTransformer,
+  })
   unpaidEarnings: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, default: 0 })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    default: 0,
+    transformer: DecimalTransformer,
+  })
   paidEarnings: number;
 
   @Column({ type: 'timestamptz', nullable: true })
