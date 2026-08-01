@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { PaymentsService } from './payments.service.js';
@@ -12,6 +12,18 @@ import { SkipOnboarding } from '../common/decorators/skip-onboarding.decorator.j
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
+
+  @Get('fee-quote')
+  @ApiOperation({
+    summary:
+      'What a top-up of this amount will cost, including any convenience fee.',
+  })
+  quote(@Query('amount') amount: string) {
+    // Exists so the checkout can show the surcharge before the customer
+    // commits, without reimplementing the gross-up on the client where it
+    // would drift from the server's version.
+    return this.paymentsService.quote(Number(amount));
+  }
 
   @Post('create-order')
   @SkipOnboarding()

@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -13,6 +14,10 @@ import { WalletService } from '../wallet/wallet.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { VerifyPaymentDto } from './dto/verify-payment.dto.js';
 import { istDayStart } from '../common/utils/date.util.js';
+import {
+  calculateConvenienceFee,
+  ConvenienceFeeConfig,
+} from './convenience-fee.js';
 
 @Injectable()
 export class PaymentsService {
@@ -24,7 +29,32 @@ export class PaymentsService {
     private readonly gatewayFactory: PaymentGatewayFactory,
     private readonly walletService: WalletService,
     private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
   ) {}
+
+  /** The fee configuration in force, resolved once. */
+  private feeConfig(): ConvenienceFeeConfig {
+    return (
+      this.config.get<ConvenienceFeeConfig>('payments.convenienceFee') ?? {
+        enabled: false,
+        percent: 0,
+        gstPercent: 0,
+      }
+    );
+  }
+
+  /**
+   * What a top-up of `amount` will actually cost.
+   *
+   * Read-only, and the same code path the order uses, so the figure quoted to
+   * the customer cannot drift from the figure they are charged.
+   */
+  quote(amount: number) {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('amount must be a positive number');
+    }
+    return calculateConvenienceFee(amount, this.feeConfig());
+  }
 
   async createOrder(userId: string, dto: CreateOrderDto) {
     const wallet = await this.walletService.getWallet(userId);
@@ -33,8 +63,13 @@ export class PaymentsService {
     const gateway = this.gatewayFactory.getForCurrency(currency);
     const idempotencyKey = randomUUID();
 
+    // `dto.amount` is the credit the customer asked for. When a convenience
+    // fee applies, the order is raised for the grossed-up total instead, and
+    // the wallet is still credited only what they asked for.
+    const fees = calculateConvenienceFee(dto.amount, this.feeConfig());
+
     const result = await gateway.createOrder({
-      amount: dto.amount,
+      amount: fees.chargedAmount,
       currency,
       userId,
       idempotencyKey,
@@ -44,7 +79,9 @@ export class PaymentsService {
       userId,
       gateway: gateway.name,
       gatewayOrderId: result.gatewayOrderId,
-      amount: dto.amount,
+      amount: fees.amount,
+      convenienceFee: fees.convenienceFee,
+      chargedAmount: fees.chargedAmount,
       currency,
       idempotencyKey,
       metadata: result.gatewayData,
@@ -55,7 +92,12 @@ export class PaymentsService {
     return {
       paymentId: payment.id,
       gatewayOrderId: result.gatewayOrderId,
-      amount: dto.amount,
+      // The breakdown is returned in full so the checkout can show it. A
+      // surcharge the customer only discovers on their statement is not one
+      // they were told about, and disclosure before payment is required.
+      amount: fees.amount,
+      convenienceFee: fees.convenienceFee,
+      chargedAmount: fees.chargedAmount,
       currency,
       gatewayKey: gateway.getPublicKey(),
     };
@@ -190,6 +232,25 @@ export class PaymentsService {
       payment.gatewayPaymentId = result.gatewayPaymentId ?? null;
 
       if (result.status === 'completed') {
+        // The gateway tells us what it actually processed, and until now that
+        // was accepted without comparison. It has to match what we raised the
+        // order for: a mismatch means the row and the money have diverged, and
+        // crediting on the strength of our own record would be crediting a
+        // figure the customer never paid. Refusing to settle leaves the
+        // payment pending for a human rather than silently getting it wrong.
+        const expected = Number(payment.chargedAmount);
+        if (
+          result.amount !== undefined &&
+          Math.abs(Number(result.amount) - expected) > 0.009
+        ) {
+          this.logger.error(
+            `Webhook amount mismatch on order ${result.gatewayOrderId}: ` +
+              `gateway reported ${result.amount}, order was raised for ${expected}. ` +
+              `Not crediting.`,
+          );
+          return { received: true };
+        }
+
         payment.status = PaymentStatus.COMPLETED;
         await manager.save(payment);
 

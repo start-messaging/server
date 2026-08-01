@@ -245,9 +245,13 @@ export async function seedCompletedPayment(
   amount = 500,
 ): Promise<void> {
   await sql(
+    // chargedAmount is what the gateway took; with no convenience fee that is
+    // the same as what was credited, which is what every historical payment
+    // looks like.
     `INSERT INTO "payments"
-       ("userId", "amount", "status", "currency", "gateway", "gatewayOrderId", "idempotencyKey")
-     VALUES ($1, $2, 'completed', 'INR', 'razorpay', $3, $3)`,
+       ("userId", "amount", "convenienceFee", "chargedAmount", "status",
+        "currency", "gateway", "gatewayOrderId", "idempotencyKey")
+     VALUES ($1, $2, 0, $2, 'completed', 'INR', 'razorpay', $3, $3)`,
     [userId, amount, unique('order')],
   );
 }
