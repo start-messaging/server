@@ -155,6 +155,20 @@ export class AffiliateLedgerService {
 
       this.assertTransitionAllowed(locked.status, patch.status);
 
+      // A payout with no destination recorded cannot have been sent anywhere,
+      // so it must not be recordable as PAID — and PAID is terminal, so the
+      // mistake would need raw SQL to undo. The payout run no longer creates
+      // such rows, but ones raised before that guard existed are still in the
+      // table. FAILED is the correct outcome: it returns the balance and the
+      // next cycle retries once the partner supplies their details.
+      if (patch.status === PayoutStatus.PAID && !locked.payoutMethod) {
+        throw new BadRequestException(
+          'This payout has no destination recorded, so it cannot be marked paid. ' +
+            'Mark it failed instead — the balance returns to the partner and the ' +
+            'next cycle will retry once they add their payout details.',
+        );
+      }
+
       const update: Partial<PartnerPayout> = {
         status: patch.status,
         processedByAdminId: patch.adminId ?? locked.processedByAdminId,

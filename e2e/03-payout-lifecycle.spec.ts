@@ -120,6 +120,37 @@ test.describe('payout lifecycle', () => {
     expect(totals.ledger.unpaid).toBe(0);
   });
 
+  test('a payout with no destination cannot be marked paid', async ({
+    request,
+  }) => {
+    const id = await raisePayout(request);
+
+    // Simulates a payout raised before the run started requiring a
+    // destination. Money cannot have been sent to nowhere, and PAID is
+    // terminal, so recording it would need raw SQL to undo.
+    await sql(
+      `UPDATE "partner_payouts" SET "payoutMethod" = NULL WHERE "id" = $1`,
+      [id],
+    );
+
+    const res = await setStatus(request, id, {
+      status: 'paid',
+      paymentReference: 'UTR999',
+    });
+    expect(res.status(), await res.text()).toBe(400);
+
+    const [row] = await sql<{ status: string }>(
+      `SELECT "status" FROM "partner_payouts" WHERE "id" = $1`,
+      [id],
+    );
+    expect(row.status).toBe('pending');
+
+    // Failing it is still allowed, and returns the money.
+    const failed = await setStatus(request, id, { status: 'failed' });
+    expect(failed.ok(), await failed.text()).toBeTruthy();
+    expect((await partnerTotals(partner.id)).ledger.unpaid).toBe(100);
+  });
+
   test('paid is terminal', async ({ request }) => {
     const id = await raisePayout(request);
     await setStatus(request, id, { status: 'paid' });
