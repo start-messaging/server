@@ -65,18 +65,8 @@ export class AffiliateProgram1785110400000 implements MigrationInterface {
         "cookieDurationDays"     integer NOT NULL DEFAULT 60,
         "accrualIntervalHours"   integer NOT NULL DEFAULT 48,
         "accrualLookbackHours"   integer NOT NULL DEFAULT 168,
-        -- Watermark: start of the last successful accrual run. The accrual
-        -- widens its window back to this when the lookback would not reach it,
-        -- so an outage longer than the lookback delays commission instead of
-        -- losing it permanently. Null until the first run completes.
-        "lastAccrualAt"          TIMESTAMP WITH TIME ZONE,
         CONSTRAINT "PK_affiliate_settings" PRIMARY KEY ("id"),
-        CONSTRAINT "UQ_affiliate_settings_singleton" UNIQUE ("isSingleton"),
-        -- A lookback shorter than the interval leaves the difference
-        -- permanently unscanned. Enforced in the database as well as the
-        -- service so a manual UPDATE cannot quietly create the hole.
-        CONSTRAINT "CHK_affiliate_settings_lookback_covers_interval"
-          CHECK ("accrualLookbackHours" >= "accrualIntervalHours")
+        CONSTRAINT "UQ_affiliate_settings_singleton" UNIQUE ("isSingleton")
       )
     `);
 
