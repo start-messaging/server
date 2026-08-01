@@ -20,6 +20,9 @@ import type { CookieOptions } from 'express';
 import { REFRESH_TOKEN_MAX_AGE_MS } from '../common/constants/app.constants.js';
 import { AttributionService } from '../affiliate/services/attribution.service.js';
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Referral context carried on a signup request, read from the cookie. */
 export interface SignupAttribution {
   referralCode: string | null;
@@ -80,6 +83,11 @@ export class AuthService {
     ip: string,
     attribution?: SignupAttribution,
   ) {
+    // Normalised on the way in so every new row is stored one way, and the
+    // duplicate check below (which is now case-insensitive) cannot be walked
+    // around by changing capitalisation.
+    dto.email = dto.email.trim().toLowerCase();
+
     const existing = await this.usersService.findByEmail(dto.email);
     if (existing) {
       throw new ConflictException('Email already registered');
@@ -262,15 +270,34 @@ export class AuthService {
     };
   }
 
-  parseRefreshCookie(cookieValue: string): {
+  /**
+   * Splits the `${userId}:${token}` refresh cookie.
+   *
+   * Takes `unknown` rather than `string` on purpose: `cookie-parser` runs
+   * every cookie through `JSONCookies`, so a value the client prefixes with
+   * `j:` arrives already parsed. `refresh_token=j%3A1` becomes the number 1,
+   * and calling `.indexOf` on it threw — an unauthenticated 500 on a live
+   * endpoint. The type the compiler sees is not the type that arrives.
+   */
+  parseRefreshCookie(cookieValue: unknown): {
     userId: string;
     token: string;
   } | null {
+    if (typeof cookieValue !== 'string') return null;
+
     const separatorIndex = cookieValue.indexOf(':');
     if (separatorIndex === -1) return null;
     const userId = cookieValue.substring(0, separatorIndex);
     const token = cookieValue.substring(separatorIndex + 1);
     if (!userId || !token) return null;
+
+    // The id half goes straight into a lookup on a uuid column, so anything
+    // that is not a uuid reaches Postgres as a cast error and surfaces as a
+    // 500 rather than a 401. `refresh_token=not-a-uuid:x` was enough to do it,
+    // unauthenticated, on a live endpoint. A malformed cookie is a rejected
+    // credential, not a server fault.
+    if (!UUID_PATTERN.test(userId)) return null;
+
     return { userId, token };
   }
 

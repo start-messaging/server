@@ -78,8 +78,24 @@ export class UsersService {
       .getOne();
   }
 
+  /**
+   * Looks a user up by email, ignoring case.
+   *
+   * Email is case-insensitive in practice — every mainstream provider treats
+   * it that way — but the column is not, and nothing normalised on the way in.
+   * The result was that registering `Sam@example.com` and then logging in as
+   * `sam@example.com` returned "Invalid credentials", and registering the
+   * second spelling created a *second account* with its own wallet. Matching
+   * on lower(email) makes both spellings resolve to the one person.
+   *
+   * `IDX_users_email_lower` is the matching functional index, so this stays an
+   * index lookup rather than becoming a sequential scan.
+   */
   async findByEmail(email: string): Promise<User | null> {
-    return this.usersRepository.findOne({ where: { email } });
+    return this.usersRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.email) = LOWER(:email)', { email })
+      .getOne();
   }
 
   async findByMobileNumber(mobileNumber: string): Promise<User | null> {
