@@ -5,7 +5,10 @@ import {
   onboardCustomer,
   Customer,
 } from './helpers/actors.js';
-import { calculateConvenienceFee } from '../src/payments/convenience-fee.js';
+import {
+  calculateConvenienceFee,
+  DEFAULT_CONVENIENCE_FEE,
+} from '../src/payments/convenience-fee.js';
 
 /**
  * Passing the gateway's cut on to the customer.
@@ -17,19 +20,24 @@ import { calculateConvenienceFee } from '../src/payments/convenience-fee.js';
  */
 test.describe('convenience fee arithmetic', () => {
   /** What the business actually runs: a flat 2% added to the top-up. */
-  const SIMPLE = {
-    enabled: true,
-    mode: 'simple' as const,
-    percent: 2,
-    gstPercent: 18,
-  };
-  /** The exact-netting alternative, kept available but not the default. */
-  const RATE = {
-    enabled: true,
-    mode: 'gross_up' as const,
-    percent: 2,
-    gstPercent: 18,
-  };
+  const SIMPLE = { mode: 'simple' as const, percent: 2, gstPercent: 18 };
+  /** The exact-netting alternative, available but not the default. */
+  const RATE = { mode: 'gross_up' as const, percent: 2, gstPercent: 18 };
+
+  test('the shipped default is a flat 2%', () => {
+    // There is no switch: a deployment that configures nothing still charges
+    // the fee, because it is part of what a top-up costs.
+    expect(DEFAULT_CONVENIENCE_FEE).toEqual({
+      mode: 'simple',
+      percent: 2,
+      gstPercent: 18,
+    });
+    expect(calculateConvenienceFee(1000, DEFAULT_CONVENIENCE_FEE)).toEqual({
+      amount: 1000,
+      convenienceFee: 20,
+      chargedAmount: 1020,
+    });
+  });
 
   test('simple mode adds exactly the percentage, in round numbers', () => {
     expect(calculateConvenienceFee(1000, SIMPLE)).toEqual({
@@ -65,8 +73,8 @@ test.describe('convenience fee arithmetic', () => {
     expect(net).toBeGreaterThan(995);
   });
 
-  test('is off unless explicitly enabled', () => {
-    const off = calculateConvenienceFee(1000, { ...SIMPLE, enabled: false });
+  test('only a zero rate removes the surcharge', () => {
+    const off = calculateConvenienceFee(1000, { ...SIMPLE, percent: 0 });
     expect(off.convenienceFee).toBe(0);
     expect(off.chargedAmount).toBe(1000);
     expect(off.amount).toBe(1000);
@@ -127,7 +135,6 @@ test.describe('convenience fee arithmetic', () => {
     // A rate at or above 100% has no solution; charging nothing extra is the
     // safe answer rather than an infinity reaching the gateway.
     const f = calculateConvenienceFee(1000, {
-      enabled: true,
       mode: 'gross_up',
       percent: 100,
       gstPercent: 18,

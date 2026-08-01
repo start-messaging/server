@@ -17,6 +17,7 @@ import { istDayStart } from '../common/utils/date.util.js';
 import {
   calculateConvenienceFee,
   ConvenienceFeeConfig,
+  DEFAULT_CONVENIENCE_FEE,
 } from './convenience-fee.js';
 
 @Injectable()
@@ -32,15 +33,17 @@ export class PaymentsService {
     private readonly config: ConfigService,
   ) {}
 
-  /** The fee configuration in force, resolved once. */
+  /**
+   * The fee rate in force.
+   *
+   * Falls back to the shipped default rather than to "no fee": the surcharge
+   * is part of what a top-up costs, so a missing config key must not quietly
+   * turn it off and leave the business paying the gateway.
+   */
   private feeConfig(): ConvenienceFeeConfig {
     return (
-      this.config.get<ConvenienceFeeConfig>('payments.convenienceFee') ?? {
-        enabled: false,
-        mode: 'simple',
-        percent: 0,
-        gstPercent: 0,
-      }
+      this.config.get<ConvenienceFeeConfig>('payments.convenienceFee') ??
+      DEFAULT_CONVENIENCE_FEE
     );
   }
 

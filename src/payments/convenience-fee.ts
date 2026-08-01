@@ -25,13 +25,26 @@
 export type ConvenienceFeeMode = 'simple' | 'gross_up';
 
 export interface ConvenienceFeeConfig {
-  enabled: boolean;
   mode: ConvenienceFeeMode;
   /** The surcharge rate. In SIMPLE mode this is exactly what gets added. */
   percent: number;
   /** Tax the gateway charges on its fee. Only used by GROSS_UP. */
   gstPercent: number;
 }
+
+/**
+ * The rate in force. Not optional and not switchable: the fee is part of what
+ * a top-up costs, so there is no configuration in which it is absent.
+ *
+ * The values are overridable by environment for the case where the gateway's
+ * rate changes and the business needs to follow it without a deploy — but they
+ * carry working defaults, so nothing has to be set for this to be correct.
+ */
+export const DEFAULT_CONVENIENCE_FEE: ConvenienceFeeConfig = {
+  mode: 'simple',
+  percent: 2,
+  gstPercent: 18,
+};
 
 export interface FeeBreakdown {
   /** What the wallet is credited. */
@@ -51,7 +64,9 @@ export function calculateConvenienceFee(
   amount: number,
   config: ConvenienceFeeConfig,
 ): FeeBreakdown {
-  if (!config.enabled || config.percent <= 0) {
+  // A zero or negative rate is the only way to end up with no surcharge, and
+  // it means somebody has configured one deliberately.
+  if (config.percent <= 0) {
     return { amount, convenienceFee: 0, chargedAmount: amount };
   }
 

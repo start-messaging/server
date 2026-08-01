@@ -22,9 +22,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * SAFETY: additive and idempotent. `users` is small enough that building the
  * index is effectively instant; it takes a brief SHARE lock on the table.
  */
-export class UsersEmailCaseInsensitiveIndex1785283200000
-  implements MigrationInterface
-{
+export class UsersEmailCaseInsensitiveIndex1785283200000 implements MigrationInterface {
   name = 'UsersEmailCaseInsensitiveIndex1785283200000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

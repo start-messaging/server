@@ -1,3 +1,5 @@
+import { DEFAULT_CONVENIENCE_FEE } from '../payments/convenience-fee.js';
+
 export default () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   database: {
@@ -62,31 +64,34 @@ export default () => ({
       webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
     },
     /**
-     * Passes the gateway's cut on to the customer instead of absorbing it.
+     * The customer pays the gateway's cut. Always — this is what a top-up
+     * costs, not a mode the deployment can be in.
      *
-     * OFF by default, deliberately. This changes what every customer is
-     * charged, so it must be switched on knowingly rather than arriving with a
-     * deploy.
+     * The rate is overridable so it can follow the gateway's pricing without a
+     * deploy, but it defaults to Razorpay's published 2%, so an environment
+     * that sets nothing is already correct.
      *
-     * Razorpay's published rate is 2% across domestic cards, UPI, netbanking
-     * and wallets, with GST charged on that fee.
+     * `simple` adds the percentage to what the customer asked for, which is a
+     * round number they can check. `gross_up` charges whatever nets the top-up
+     * exactly, which is precise but not a total anyone can verify in their
+     * head.
      *
      * NOTE: UPI carries zero MDR in India and merchants are not permitted to
      * levy a charge on it. The payment method is not known when the order is
      * created — the customer picks it afterwards, inside Razorpay Checkout —
-     * so a surcharge configured here necessarily applies to UPI as well.
-     * Charging per method would mean asking for it before the order exists.
+     * so this surcharge necessarily applies to UPI as well. Charging per
+     * method would mean asking for it before the order exists.
      */
     convenienceFee: {
-      enabled: process.env.CONVENIENCE_FEE_ENABLED === 'true',
-      // `simple` adds the percentage to what the customer asked for, which is
-      // a round number they can check. `gross_up` charges whatever nets the
-      // top-up exactly, which is precise but unmemorable.
-      mode: (process.env.CONVENIENCE_FEE_MODE ?? 'simple') as
-        | 'simple'
-        | 'gross_up',
-      percent: Number(process.env.CONVENIENCE_FEE_PERCENT ?? 2),
-      gstPercent: Number(process.env.CONVENIENCE_FEE_GST_PERCENT ?? 18),
+      mode: (process.env.CONVENIENCE_FEE_MODE ??
+        DEFAULT_CONVENIENCE_FEE.mode) as 'simple' | 'gross_up',
+      percent: Number(
+        process.env.CONVENIENCE_FEE_PERCENT ?? DEFAULT_CONVENIENCE_FEE.percent,
+      ),
+      gstPercent: Number(
+        process.env.CONVENIENCE_FEE_GST_PERCENT ??
+          DEFAULT_CONVENIENCE_FEE.gstPercent,
+      ),
     },
   },
   google: {

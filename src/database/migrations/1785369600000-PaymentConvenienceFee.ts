@@ -13,8 +13,9 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * and the fee is zero. `payments` is small (113 rows on the production
  * restore), so the rewrite the NOT NULL backfill costs is negligible.
  *
- * Applying this changes nothing on its own: the surcharge is gated behind
- * CONVENIENCE_FEE_ENABLED, which defaults to false.
+ * Applying this changes nothing on its own — it only adds the columns. The
+ * surcharge itself starts applying when the code that computes it ships, so
+ * this migration must be in place before that deploy, not after it.
  */
 export class PaymentConvenienceFee1785369600000 implements MigrationInterface {
   name = 'PaymentConvenienceFee1785369600000';

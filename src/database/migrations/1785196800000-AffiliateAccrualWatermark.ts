@@ -13,9 +13,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * single-row table, both `IF NOT EXISTS`-guarded, so it costs no meaningful
  * lock and can be re-run.
  */
-export class AffiliateAccrualWatermark1785196800000
-  implements MigrationInterface
-{
+export class AffiliateAccrualWatermark1785196800000 implements MigrationInterface {
   name = 'AffiliateAccrualWatermark1785196800000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

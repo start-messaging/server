@@ -57,11 +57,9 @@ export const envValidationSchema = Joi.object({
   RAZORPAY_KEY_SECRET: Joi.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
 
-  // Surcharging the customer for the gateway's cut. Off unless explicitly
-  // enabled — it changes what people are charged.
-  CONVENIENCE_FEE_ENABLED: Joi.boolean().default(false),
-  // Capped well below anything defensible: a fat-fingered 20 instead of 2
-  // would quietly overcharge every top-up.
+  // The customer always pays the gateway's cut; these only tune the rate, and
+  // all three have working defaults. Capped well below anything defensible: a
+  // fat-fingered 20 instead of 2 would quietly overcharge every top-up.
   CONVENIENCE_FEE_MODE: Joi.string()
     .valid('simple', 'gross_up')
     .default('simple'),
