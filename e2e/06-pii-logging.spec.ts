@@ -46,6 +46,25 @@ test.describe('sensitive data never reaches the logs', () => {
     return readFileSync(LOG_PATH, 'utf8').slice(byteOffset);
   }
 
+  /**
+   * Reads what was logged and proves the log was actually being written.
+   *
+   * Every assertion in this file is a `not.toContain`, which an empty string
+   * satisfies. If the server's stdout is not going where LOG_PATH points —
+   * different working directory, redirect dropped in CI — these tests would go
+   * on passing while inspecting nothing at all. Requiring the request itself
+   * to appear makes them fail closed instead.
+   */
+  function logProvingRequestWasWritten(before: number, marker: string): string {
+    const written = logSince(before);
+    expect(
+      written,
+      `nothing matching "${marker}" was written to ${LOG_PATH} — ` +
+        `the log is not being captured, so this test proves nothing`,
+    ).toContain(marker);
+    return written;
+  }
+
   test('payout details are redacted in the request log', async ({ request }) => {
     const secrets = {
       bankAccountName: 'Vicky Sangwan',
@@ -64,11 +83,7 @@ test.describe('sensitive data never reaches the logs', () => {
 
     // Give the logger a moment to flush.
     await new Promise((r) => setTimeout(r, 500));
-    const written = logSince(before);
-
-    expect(written, 'the request was not logged at all').toContain(
-      '/partner/payout-details',
-    );
+    const written = logProvingRequestWasWritten(before, '/partner/payout-details');
 
     for (const [field, value] of Object.entries(secrets)) {
       expect(
@@ -89,7 +104,9 @@ test.describe('sensitive data never reaches the logs', () => {
     expect(res.ok(), await res.text()).toBeTruthy();
 
     await new Promise((r) => setTimeout(r, 500));
-    expect(logSince(before)).not.toContain(upiId);
+    expect(
+      logProvingRequestWasWritten(before, '/partner/payout-details'),
+    ).not.toContain(upiId);
   });
 
   test('passwords are redacted on registration and login', async ({
@@ -103,7 +120,9 @@ test.describe('sensitive data never reaches the logs', () => {
     });
 
     await new Promise((r) => setTimeout(r, 500));
-    expect(logSince(before)).not.toContain(password);
+    expect(
+      logProvingRequestWasWritten(before, '/partner/auth/login'),
+    ).not.toContain(password);
   });
 
   test('the partner can still read back their own payout details', async ({
