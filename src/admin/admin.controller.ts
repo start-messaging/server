@@ -5,6 +5,7 @@ import {
   Get,
   NotFoundException,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -84,7 +85,7 @@ export class AdminController {
       'Update user (active flag, admin call tracking). Admin-only fields are never exposed on customer APIs.',
   })
   async updateUserAdmin(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AdminUpdateUserDto,
   ) {
     const user = await this.usersService.updateByAdmin(id, dto);
@@ -110,7 +111,7 @@ export class AdminController {
 
   @Get('kyc/:userId')
   @ApiOperation({ summary: 'Get KYC details for a user' })
-  async getKycDetail(@Param('userId') userId: string) {
+  async getKycDetail(@Param('userId', ParseUUIDPipe) userId: string) {
     const user = await this.usersService.findByIdForAdmin(userId);
     if (!user) return null;
     return excludePassword(user);
@@ -119,7 +120,7 @@ export class AdminController {
   @Patch('kyc/:userId')
   @ApiOperation({ summary: 'Approve or reject KYC submission' })
   async reviewKyc(
-    @Param('userId') userId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
     @CurrentUser('id') adminUserId: string,
     @Body() dto: ReviewKycDto,
   ) {
@@ -134,7 +135,10 @@ export class AdminController {
 
   @Get('kyc/:userId/document')
   @ApiOperation({ summary: 'Stream KYC document for a user' })
-  async getKycDocument(@Param('userId') userId: string, @Res() res: Response) {
+  async getKycDocument(
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Res() res: Response,
+  ) {
     const user = await this.usersService.findById(userId);
     if (!user?.kycDocumentPath) {
       throw new NotFoundException('No KYC document found');
@@ -231,7 +235,7 @@ export class AdminController {
   @ApiOperation({
     summary: 'Customer overview: wallet, message stats, API key count',
   })
-  async getUserOverview(@Param('userId') userId: string) {
+  async getUserOverview(@Param('userId', ParseUUIDPipe) userId: string) {
     const [wallet, messageStats, apiKeyCount, messagesTrend] =
       await Promise.all([
         this.walletService.getWallet(userId),
@@ -251,7 +255,7 @@ export class AdminController {
   @Get('users/:userId/messages')
   @ApiOperation({ summary: 'Paginated message history for a user (admin)' })
   async getUserMessages(
-    @Param('userId') userId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
     @Query() query: AdminMessageQueryDto,
   ) {
     const [items, total] = await this.messagesService.findByUserAdmin(
@@ -278,7 +282,7 @@ export class AdminController {
     summary: 'Wallet transactions for a user (paginated, filterable, sortable)',
   })
   async getUserTransactions(
-    @Param('userId') userId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
     @Query() query: AdminTransactionQueryDto,
   ) {
     const [items, total] = await this.walletService.getTransactionsAdmin(
@@ -302,7 +306,7 @@ export class AdminController {
   @Get('users/:userId/api-keys')
   @ApiOperation({ summary: 'List API keys for a user (admin, paginated)' })
   async getUserApiKeys(
-    @Param('userId') userId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
     @Query() query: PaginationQueryDto,
   ) {
     const [items, total] = await this.apiKeysService.findByUserPaginated(
@@ -331,7 +335,7 @@ export class AdminController {
 
   @Get('templates/:id')
   @ApiOperation({ summary: 'Get template detail' })
-  async getTemplateDetail(@Param('id') id: string) {
+  async getTemplateDetail(@Param('id', ParseUUIDPipe) id: string) {
     return this.channelsService.findTemplateByIdAdmin(id);
   }
 
@@ -343,20 +347,20 @@ export class AdminController {
 
   @Patch('templates/:id/publish')
   @ApiOperation({ summary: 'Publish a draft template' })
-  async publishTemplate(@Param('id') id: string) {
+  async publishTemplate(@Param('id', ParseUUIDPipe) id: string) {
     return this.channelsService.publishTemplate(id);
   }
 
   @Patch('templates/:id/unpublish')
   @ApiOperation({ summary: 'Unpublish a template back to draft' })
-  async unpublishTemplate(@Param('id') id: string) {
+  async unpublishTemplate(@Param('id', ParseUUIDPipe) id: string) {
     return this.channelsService.unpublishTemplate(id);
   }
 
   @Patch('templates/:id')
   @ApiOperation({ summary: 'Update an OTP template' })
   async updateTemplate(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateTemplateDto,
   ) {
     return this.channelsService.updateTemplate(id, dto);
@@ -364,7 +368,7 @@ export class AdminController {
 
   @Delete('templates/:id')
   @ApiOperation({ summary: 'Soft-delete a custom OTP template' })
-  async deleteTemplate(@Param('id') id: string) {
+  async deleteTemplate(@Param('id', ParseUUIDPipe) id: string) {
     await this.channelsService.deleteTemplate(id);
     return { deleted: true };
   }

@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ChannelsService } from './channels.service.js';
 import { SkipOnboarding } from '../common/decorators/skip-onboarding.decorator.js';
@@ -18,7 +18,7 @@ export class ChannelsController {
 
   @Get('channels/:id/templates')
   @ApiOperation({ summary: 'List templates for a channel' })
-  findTemplatesByChannel(@Param('id') id: string) {
+  findTemplatesByChannel(@Param('id', ParseUUIDPipe) id: string) {
     return this.channelsService.findTemplatesByChannel(id);
   }
 

@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Req,
@@ -52,7 +53,7 @@ export class ApiKeysController {
   @Patch(':id/ip-restrictions')
   @ApiOperation({ summary: 'Update IP restrictions for an API key' })
   updateIps(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') userId: string,
     @Body() dto: UpdateApiKeyIpsDto,
   ) {
@@ -61,7 +62,10 @@ export class ApiKeysController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete an API key' })
-  remove(@Param('id') id: string, @CurrentUser('id') userId: string) {
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
     return this.apiKeysService.delete(id, userId);
   }
 }

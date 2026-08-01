@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   Controller,
+  NotFoundException,
   Get,
   Param,
+  ParseUUIDPipe,
   Post,
   Query,
 } from '@nestjs/common';
@@ -44,7 +46,12 @@ export class MessagesController {
       // sortBy/sortOrder and drop them silently, so a client asking for
       // `sortBy=cost&cursor=…` got newest-first rows back believing they were
       // sorted by cost.
-      if (query.sortBy !== undefined || query.sortOrder !== undefined) {
+      //
+      // Checked against the default rather than against `undefined`:
+      // `sortOrder` is declared with `= 'DESC'`, so it is *always* set by the
+      // time the DTO is built. Testing it for undefined rejected every cursor
+      // request ever made, including ones that asked for no sort at all.
+      if (query.sortBy !== undefined || query.sortOrder === 'ASC') {
         throw new BadRequestException(
           'sortBy and sortOrder cannot be combined with cursor pagination; ' +
             'cursor pages are always ordered newest first. Use page-based ' +
@@ -75,13 +82,25 @@ export class MessagesController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get message by ID' })
-  findOne(@Param('id') id: string, @CurrentUser('id') userId: string) {
-    return this.messagesService.findById(id, userId);
+  async findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    // The lookup is owner-scoped, so another customer's id simply finds
+    // nothing — but returning that null answered 200 with a null body, which
+    // reads to a client as "this message exists and is empty" rather than
+    // "not yours". Same 404 either way, so it also stays non-enumerable.
+    const message = await this.messagesService.findById(id, userId);
+    if (!message) throw new NotFoundException('Message not found');
+    return message;
   }
 
   @Post(':id/check-status')
   @ApiOperation({ summary: 'Check delivery status from SMS provider' })
-  checkStatus(@Param('id') id: string, @CurrentUser('id') userId: string) {
+  checkStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
     return this.messagesService.checkStatus(id, userId);
   }
 }
