@@ -52,6 +52,17 @@ export class OnboardingGuard implements CanActivate {
     const user = await this.usersService.findById(reqUser.id);
     if (!user) return true;
 
+    // Deactivation has to bite immediately, not when the access token happens
+    // to expire. Login, refresh and Google sign-in all refuse an inactive
+    // account, so no *new* token can be issued — but an already-issued one
+    // stayed good for the rest of its lifetime, and that was long enough for
+    // an account deactivated for fraud to keep draining its wallet and sending
+    // messages. This row is already loaded for the onboarding check below, so
+    // the test costs nothing extra on the hot path.
+    if (!user.isActive) {
+      throw new ForbiddenException('This account has been deactivated.');
+    }
+
     if (user.kycStatus === KycStatus.APPROVED) return true;
 
     let currentStep: number;

@@ -28,10 +28,21 @@ export class RazorpayGateway implements PaymentGateway {
     }
   }
 
-  private safeCompare(a: string, b: string): boolean {
+  /**
+   * Constant-time hex comparison that tolerates a missing counterparty.
+   *
+   * Typed as `unknown` because the value on the other side comes from a header
+   * on a public, unauthenticated endpoint: omitting `x-razorpay-signature`
+   * entirely made this `Buffer.from(undefined)`, which throws, so anyone could
+   * turn the webhook into a 500 with an empty POST. An absent or malformed
+   * signature is simply a failed comparison.
+   */
+  private safeCompare(a: unknown, b: unknown): boolean {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+
     const bufA = Buffer.from(a, 'hex');
     const bufB = Buffer.from(b, 'hex');
-    if (bufA.length !== bufB.length) return false;
+    if (bufA.length === 0 || bufA.length !== bufB.length) return false;
     return timingSafeEqual(bufA, bufB);
   }
 
