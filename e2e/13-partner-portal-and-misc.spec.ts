@@ -41,30 +41,110 @@ test.describe('partner session', () => {
     return match ? match[1] : null;
   }
 
-  test('registration does not hand back a session', async ({ request }) => {
+  test('registration hands back a session that works immediately', async ({
+    request,
+  }) => {
+    // There is no approval step any more, so there is nothing to wait for.
     const email = `${unique('applicant')}@example.com`;
     const res = await request.post('/partner/auth/register', {
       data: { email, password: 'Password123!', firstName: 'A', lastName: 'B' },
     });
     expect(res.ok(), await res.text()).toBeTruthy();
 
-    // Applications are reviewed before they become accounts, so nothing here
-    // should be usable as a credential.
-    const text = await res.text();
-    expect(text).not.toContain('accessToken');
+    const body = await payload<{ accessToken: string }>(res);
+    expect(body.accessToken).toBeTruthy();
+
+    const me = await request.get('/partner/auth/me', {
+      headers: auth(body.accessToken),
+    });
+    expect(me.ok(), await me.text()).toBeTruthy();
   });
 
-  test('a partner under review cannot log in', async ({ request }) => {
-    const email = `${unique('pending')}@example.com`;
+  test('a new partner is active, not awaiting approval', async ({
+    request,
+  }) => {
+    const email = `${unique('fresh')}@example.com`;
     await request.post('/partner/auth/register', {
       data: { email, password: 'Password123!', firstName: 'A', lastName: 'B' },
     });
 
+    const [row] = await sql<{ status: string }>(
+      `SELECT "status" FROM "partners" WHERE "email" = $1`,
+      [email],
+    );
+    expect(row.status).toBe('active');
+
+    // And logging in works straight away.
     const res = await request.post('/partner/auth/login', {
       data: { email, password: 'Password123!' },
     });
+    expect(res.ok(), await res.text()).toBeTruthy();
+  });
+
+  test('a suspended partner still cannot log in', async ({ request }) => {
+    // Removing approval must not have weakened the gates that matter.
+    const suspended = await createPartner(request, { status: 'suspended' });
+
+    const res = await request.post('/partner/auth/login', {
+      data: { email: suspended.email, password: suspended.password },
+    });
     expect(res.ok()).toBeFalsy();
     expect(res.status()).toBeLessThan(500);
+  });
+
+  test.describe('Google sign-in', () => {
+    test('refuses a bogus id token without creating a partner', async ({
+      request,
+    }) => {
+      const before = await sql<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM "partners"`,
+      );
+
+      const res = await request.post('/partner/auth/google', {
+        data: { idToken: 'clearly-not-a-google-token' },
+      });
+
+      expect(res.ok()).toBeFalsy();
+      // A rejected credential, not a server fault — the same distinction the
+      // rest of this auth surface makes.
+      expect(res.status(), await res.text()).toBeLessThan(500);
+
+      const after = await sql<{ count: string }>(
+        `SELECT COUNT(*)::int AS count FROM "partners"`,
+      );
+      expect(Number(after[0].count)).toBe(Number(before[0].count));
+    });
+
+    test('validates the body rather than reaching Google with junk', async ({
+      request,
+    }) => {
+      for (const data of [{}, { idToken: '' }]) {
+        const res = await request.post('/partner/auth/google', { data });
+        expect(res.status(), `accepted ${JSON.stringify(data)}`).toBe(400);
+      }
+
+      // A number is answered 401 rather than 400: the global validation pipe
+      // runs with implicit conversion, so 123 becomes the string "123", passes
+      // @IsString, and is then refused by Google. Either code is a correct
+      // answer for "that is not a token" — what matters is that neither is a
+      // 500.
+      const coerced = await request.post('/partner/auth/google', {
+        data: { idToken: 123 },
+      });
+      expect([400, 401]).toContain(coerced.status());
+    });
+
+    test('does not fall over when Google is not configured', async ({
+      request,
+    }) => {
+      // GOOGLE_CLIENT_ID is absent in this environment, which is the same
+      // shape as a deploy that forgot it. The endpoint must say so rather than
+      // throw.
+      const res = await request.post('/partner/auth/google', {
+        data: { idToken: 'anything' },
+      });
+      expect(res.status()).toBeLessThan(500);
+    });
   });
 
   test('a duplicate partner email is refused', async ({ request }) => {

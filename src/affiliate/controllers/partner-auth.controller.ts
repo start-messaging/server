@@ -46,7 +46,7 @@ export class PartnerAuthController {
 
   @Post('register')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
-  @ApiOperation({ summary: 'Apply to join the affiliate programme' })
+  @ApiOperation({ summary: 'Create an affiliate account and sign in' })
   async register(@Body() dto: PartnerRegisterDto) {
     return this.partnerAuthService.register(dto);
   }

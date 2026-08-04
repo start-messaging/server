@@ -4,7 +4,16 @@ import { CommissionType } from './affiliate-settings.entity.js';
 import { DecimalTransformer } from '../../common/transformers/decimal.transformer.js';
 
 export enum PartnerStatus {
-  /** Signed up, awaiting admin approval. Links do not attribute yet. */
+  /**
+   * Retired. Signing up no longer needs approval — anyone may join and start
+   * referring immediately, and the control sits downstream instead: a payout
+   * needs qualified referrals, a minimum balance, and an admin recording the
+   * outcome by hand.
+   *
+   * The value is kept rather than dropped because removing a value from a
+   * Postgres enum means rebuilding the type, and nothing is gained by it. No
+   * code writes it any more, and the migration moved every row that held it.
+   */
   PENDING = 'pending',
   ACTIVE = 'active',
   /** Attribution and accrual stop; existing earnings are retained. */
@@ -64,7 +73,7 @@ export class Partner extends BaseEntity {
   @Column({ type: 'varchar', length: 32, unique: true })
   referralCode: string;
 
-  @Column({ type: 'enum', enum: PartnerStatus, default: PartnerStatus.PENDING })
+  @Column({ type: 'enum', enum: PartnerStatus, default: PartnerStatus.ACTIVE })
   status: PartnerStatus;
 
   // ── Commission override ────────────────────────────────

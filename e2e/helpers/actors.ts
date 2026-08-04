@@ -160,9 +160,18 @@ export interface Partner {
   referralCode: string;
 }
 
+/**
+ * Registers a partner.
+ *
+ * Signing up no longer waits for approval, so registration itself returns a
+ * usable session — there is no second login step and no status to flip. Pass
+ * `status` to put the partner somewhere other than active; the token is still
+ * the one registration handed back, which is exactly what a suspension test
+ * needs (a real session that should stop working).
+ */
 export async function createPartner(
   api: APIRequestContext,
-  opts: { active?: boolean; email?: string } = {},
+  opts: { email?: string; status?: 'suspended' | 'rejected' } = {},
 ): Promise<Partner> {
   const email = opts.email ?? `${unique('partner')}@example.com`;
   const password = 'Password123!';
@@ -171,35 +180,25 @@ export async function createPartner(
     data: { email, password, firstName: 'Test', lastName: 'Partner' },
   });
   expect(res.ok(), await res.text()).toBeTruthy();
+  const body = await payload<{ accessToken: string }>(res);
 
   const [row] = await sql<{ id: string; referralCode: string }>(
     `SELECT "id", "referralCode" FROM "partners" WHERE "email" = $1`,
     [email],
   );
 
-  // Partners register as PENDING; most flows need an approved one.
-  if (opts.active !== false) {
-    await sql(`UPDATE "partners" SET "status" = 'active' WHERE "id" = $1`, [
+  if (opts.status) {
+    await sql(`UPDATE "partners" SET "status" = $2 WHERE "id" = $1`, [
       row.id,
+      opts.status,
     ]);
-  }
-
-  // A partner still under review is refused at login by design, so there is no
-  // token to fetch for one.
-  let accessToken = '';
-  if (opts.active !== false) {
-    const login = await api.post('/partner/auth/login', {
-      data: { email, password },
-    });
-    expect(login.ok(), await login.text()).toBeTruthy();
-    accessToken = (await payload<{ accessToken: string }>(login)).accessToken;
   }
 
   return {
     id: row.id,
     email,
     password,
-    accessToken,
+    accessToken: body.accessToken,
     referralCode: row.referralCode,
   };
 }

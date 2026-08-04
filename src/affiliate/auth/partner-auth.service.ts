@@ -56,13 +56,13 @@ export class PartnerAuthService {
   }) {
     const partner = await this.partnersService.register(data);
 
-    // No tokens are issued here. A pending partner has nothing to log in to
-    // yet, and handing out a session for an unapproved account invites
-    // probing of the partner API surface.
+    // Tokens are issued here now. There is nothing left to wait for — the
+    // partner is active the moment they sign up, so making them return to a
+    // login form would be ceremony.
     return {
+      ...(await this.issueTokens(partner)),
       status: partner.status,
-      message:
-        'Application received. You will be notified once it has been reviewed.',
+      message: 'Welcome aboard. Your referral link is ready to use.',
     };
   }
 
@@ -97,6 +97,9 @@ export class PartnerAuthService {
    * approval flow is preserved and the partner sees a "pending" screen.
    */
   async googleAuth(idToken: string, ip: string) {
+    // Accepted for symmetry with login(); nothing records it yet.
+    void ip;
+
     if (!this.googleClient) {
       throw new UnauthorizedException(
         'Google authentication is not configured',
@@ -117,18 +120,24 @@ export class PartnerAuthService {
       throw new UnauthorizedException('Invalid Google ID token');
     }
 
+    // Google will happily assert an address it has not verified. Trusting one
+    // would let somebody take over a partner account by signing up to Google
+    // with an address they do not control — and the email is the only thing
+    // tying this token to an account here.
+    if (!payload.email_verified) {
+      throw new UnauthorizedException(
+        'This Google account has no verified email address.',
+      );
+    }
+
     const { email, given_name, family_name } = payload;
 
     const existing = await this.partnersService.findByEmail(email);
     if (existing) {
-      if (existing.status === PartnerStatus.SUSPENDED) {
-        throw new ForbiddenException('This affiliate account is suspended.');
-      }
-      if (existing.status === PartnerStatus.REJECTED) {
-        throw new ForbiddenException(
-          'Your affiliate application was not approved.',
-        );
-      }
+      // The same gate the password path uses, rather than a second copy of it
+      // that drifts. The earlier version checked suspended and rejected here
+      // by hand and missed a case; there is no reason for two lists.
+      this.assertUsable(existing);
       await this.partnersService.recordLogin(existing.id);
       return { ...(await this.issueTokens(existing)), isNewPartner: false };
     }
@@ -142,14 +151,15 @@ export class PartnerAuthService {
     return { ...(await this.issueTokens(partner)), isNewPartner: true };
   }
 
-  /** Rejects partners who exist but must not hold a session. */
-
+  /**
+   * Rejects partners who exist but must not hold a session.
+   *
+   * PENDING is not among them any more: signing up no longer needs approval,
+   * so nothing creates a pending partner and the migration moved the ones that
+   * existed. Suspension and rejection still end a session at once — that is
+   * the half of this that was always load-bearing.
+   */
   private assertUsable(partner: Partner): void {
-    if (partner.status === PartnerStatus.PENDING) {
-      throw new ForbiddenException(
-        'Your affiliate application is still under review.',
-      );
-    }
     if (partner.status === PartnerStatus.REJECTED) {
       throw new ForbiddenException(
         'Your affiliate application was not approved.',

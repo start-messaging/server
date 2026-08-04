@@ -7,7 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import { randomInt } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 import { Partner, PartnerStatus } from '../entities/partner.entity.js';
 import { Referral, ReferralStatus } from '../entities/referral.entity.js';
 import {
@@ -93,9 +93,11 @@ export class PartnersService {
       phoneNumber: data.phoneNumber ?? null,
       companyName: data.companyName ?? null,
       referralCode: await this.generateUniqueCode(),
-      // Approval is manual: an affiliate link that attributes real money
-      // should not be mintable by anyone who can fill in a signup form.
-      status: PartnerStatus.PENDING,
+      // Active immediately. The programme is open to anyone, and the money is
+      // held at the other end instead: a payout needs `minPaidReferrals`
+      // qualified referrals, a balance over `minPayoutAmount`, and an admin
+      // recording the outcome. A referral code on its own pays nobody.
+      status: PartnerStatus.ACTIVE,
     });
 
     return this.partnerRepo.save(partner);
@@ -107,6 +109,11 @@ export class PartnersService {
    * A random password hash is stored so the NOT NULL constraint on
    * `passwordHash` is satisfied, but the partner can never sign in with
    * email+password — the hash is not derived from any known input.
+   *
+   * The source of that randomness is `randomBytes`, not `randomInt`: the
+   * latter takes an EXCLUSIVE maximum capped at 2^48 - 1, so `randomInt(2**48)`
+   * throws ERR_OUT_OF_RANGE — which would have made every first-time Google
+   * sign-in a 500 and created no partner at all.
    */
   async registerFromGoogle(data: {
     email: string;
@@ -124,13 +131,13 @@ export class PartnersService {
 
     const partner = this.partnerRepo.create({
       email,
-      passwordHash: await bcrypt.hash(randomInt(2 ** 48).toString(36), 10),
+      passwordHash: await bcrypt.hash(randomBytes(32).toString('hex'), 10),
       firstName: data.firstName.trim(),
       lastName: data.lastName.trim(),
       phoneNumber: null,
       companyName: null,
       referralCode: await this.generateUniqueCode(),
-      status: PartnerStatus.PENDING,
+      status: PartnerStatus.ACTIVE,
     });
 
     return this.partnerRepo.save(partner);

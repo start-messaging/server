@@ -179,11 +179,22 @@ test.describe('referral attribution', () => {
     ).rejects.toThrow(/UQ_referrals_userId|duplicate key/);
   });
 
-  test('a pending partner earns no attribution', async ({ request }) => {
-    const pending = await createPartner(request, { active: false });
+  test('a brand-new partner attributes immediately', async ({ request }) => {
+    // Signing up no longer waits for approval — the link works at once. The
+    // money is held at the payout end instead.
+    const fresh = await createPartner(request);
 
     const customer = await createCustomer(request, {
-      referralCookie: pending.referralCode,
+      referralCookie: fresh.referralCode,
+    });
+    expect((await referralFor(customer.id))?.partnerId).toBe(fresh.id);
+  });
+
+  test('a suspended partner earns no attribution', async ({ request }) => {
+    const suspended = await createPartner(request, { status: 'suspended' });
+
+    const customer = await createCustomer(request, {
+      referralCookie: suspended.referralCode,
     });
     expect(await referralFor(customer.id)).toBeNull();
   });
