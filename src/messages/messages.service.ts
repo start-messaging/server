@@ -128,9 +128,20 @@ export class MessagesService {
     newStatus: MessageStatus,
     extraFields?: Partial<Message>,
   ): Promise<Message> {
-    // Reset cost for failed messages to reflect actual spend
+    // Reset cost for failed messages to reflect actual spend.
     if (newStatus === MessageStatus.FAILED) {
       extraFields = { ...extraFields, costAmount: 0 };
+    } else {
+      // A message that is not failed must not carry a failure reason. Providers
+      // send several DLRs per message, and an early transient one can set a
+      // reason before a later DELIVERED arrives; the webhook path even folds
+      // the old reason forward (`failureReason || message.failureReason`). Left
+      // as-is, a delivered row shows a leftover "Failure Reason", which is what
+      // made the message history confusing. Clearing it here keeps the
+      // invariant: failureReason is set only while status is FAILED. This wins
+      // over whatever the caller passed in extraFields because it is applied
+      // last.
+      extraFields = { ...extraFields, failureReason: null };
     }
 
     let debited = false;
