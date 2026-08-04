@@ -1,8 +1,10 @@
 # Staging
 
-A full copy of the system that shares a box with production and shares
-nothing else. It exists so that a change can be run against production-shaped
-data before it reaches production.
+A full copy of the system — API, three front-ends, database, Redis — that
+shares the EC2 box with production and shares nothing else with it. Its
+database, Redis, secrets and payment keys are all its own, so a change can be
+exercised end to end before it reaches production without any risk to
+production data.
 
 | | Production | Staging |
 |---|---|---|
@@ -13,15 +15,25 @@ data before it reaches production.
 | Dashboard | `app.startmessaging.com` | `stage-app.startmessaging.com` |
 | Admin | `admin.startmessaging.com` | `stage-admin.startmessaging.com` |
 | Partners | *not deployed* | `stage-partners.startmessaging.com` |
-| Database | `postgres` on RDS | `startmessaging_staging` on the same RDS instance |
+| Database | `postgres` on RDS | **local Postgres on the box** (`sm_staging` role) |
 | Redis | Redis Cloud | `redis://127.0.0.1:6379` on the box, prefix `staging:` |
 | SMS | live providers | `MOCK_SMS_SEND=true` — nothing is ever sent |
 | Payments | Razorpay `rzp_live_…` | Razorpay `rzp_test_…` |
 
 ## What staging deliberately cannot do
 
-The staging database began as a restore of production, which means **the user
-IDs are the same as production's**. That fact drives most of what follows.
+Staging runs its own Postgres on the box — a dedicated `sm_staging` role with
+its own password, database `startmessaging_staging`, bound to loopback. It is
+not the production RDS instance and not the `postgres` master role: staging's
+env no longer contains either. The database starts empty and is seeded through
+the API, so it holds no production-derived rows at all.
+
+Because `NODE_ENV=production` (staging should behave like production), but a
+local Postgres has no TLS, `DATABASE_SSL=false` is set explicitly. That flag
+decouples SSL from `NODE_ENV`; unset, SSL still follows the old
+production-on rule, so production is unaffected.
+
+Several things are kept out of staging on purpose:
 
 - **Razorpay test keys only.** Production runs `rzp_live_…`; staging runs
   `rzp_test_…`, a different account mode, so a checkout here cannot move real
@@ -32,17 +44,11 @@ IDs are the same as production's**. That fact drives most of what follows.
   a staging message cannot reach a handset.
 - **No Mailgun key.** Every staging address was rewritten to
   `@staging.invalid`, but a missing key means no send is even attempted.
-- **No R2 credentials.** Uploads are keyed by user ID, and staging's user IDs
-  are production's, so a shared bucket would let a staging KYC upload
-  overwrite a real customer's document.
+- **No R2 credentials.** Uploads would otherwise share the production bucket,
+  so staging has none.
 - **No PostHog key**, so staging traffic does not distort production analytics.
 - **Its own JWT secrets.** A token minted on staging is refused by production
   and vice versa.
-
-The data itself was scrubbed before any of this ran: password hashes, refresh
-tokens, OTP hashes and API key hashes were destroyed, email addresses became
-`@staging.invalid`, and every phone number became `+9199999xxxxx`, which
-cannot route to a real handset.
 
 ## Redis
 

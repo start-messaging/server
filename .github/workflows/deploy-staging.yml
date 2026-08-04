@@ -42,6 +42,7 @@ jobs:
           set -euo pipefail
           cd ~/server-staging
 
+          PREV=$(git rev-parse HEAD)
           git fetch --quiet origin staging
           git checkout --quiet staging
           git reset --quiet --hard origin/staging
@@ -50,7 +51,24 @@ jobs:
           # build is capped rather than left to grow into the production
           # process's memory.
           export NODE_OPTIONS=--max-old-space-size=640
-          npm ci --no-audit --no-fund
+
+          # Only reinstall when the lockfile actually changed. `npm ci` deletes
+          # node_modules before repopulating it, and the still-running process
+          # lazy-requires modules mid-request — so an unconditional ci meant
+          # every code-only deploy threw "Cannot find module" and 502'd for the
+          # length of the install. Most deploys do not touch dependencies, so
+          # most now skip this entirely; when the lockfile does change there is
+          # a brief window, which for staging is acceptable.
+          if ! git diff --quiet "$PREV" HEAD -- package-lock.json; then
+            echo "lockfile changed — reinstalling dependencies"
+            npm ci --no-audit --no-fund
+          else
+            echo "dependencies unchanged — skipping install"
+          fi
+
+          # nest build replaces dist/*.js, but the running process has already
+          # required them into memory, so replacing the files does not disturb
+          # it until the restart below.
           npm run build
 
           # Migrations run before the restart, so the new code never meets an
