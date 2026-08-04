@@ -10,7 +10,11 @@ import Redis from 'ioredis';
       useFactory: (config: ConfigService) => {
         const url = config.get<string>('redis.url');
         if (!url) return null;
-        return new Redis(url);
+        const prefix = config.get<string>('redis.keyPrefix');
+        // ioredis applies `keyPrefix` to the key arguments of ordinary
+        // commands, which is all this client is used for — OTP throttling
+        // counters and referral click de-duplication.
+        return new Redis(url, prefix ? { keyPrefix: `${prefix}:` } : {});
       },
       inject: [ConfigService],
     },

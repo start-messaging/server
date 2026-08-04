@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import Redis from 'ioredis';
 import { AppLoggerModule } from './common/logger/app-logger.module.js';
 import { ConfigService } from '@nestjs/config';
 import { AppConfigModule } from './config/config.module.js';
@@ -37,11 +38,24 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
         const redisUrl = config.get<string>('redis.url');
+        const prefix = config.get<string>('redis.keyPrefix');
+
+        // Given a prefix the storage takes a client rather than a URL, so the
+        // rate-limit counters are namespaced too — without that, a load test
+        // in one environment throttles real users in the other. Unprefixed it
+        // keeps the URL form it has always used, so production is untouched.
+        let storage: ThrottlerStorageRedisService | undefined;
+        if (redisUrl) {
+          storage = prefix
+            ? new ThrottlerStorageRedisService(
+                new Redis(redisUrl, { keyPrefix: `${prefix}:throttle:` }),
+              )
+            : new ThrottlerStorageRedisService(redisUrl);
+        }
+
         return {
           throttlers: [{ name: 'default', ttl: 60000, limit: 1200 }], // Global broad limit (burstable)
-          storage: redisUrl
-            ? new ThrottlerStorageRedisService(redisUrl)
-            : undefined,
+          storage,
         };
       },
     }),
@@ -54,6 +68,7 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
 
         // Parsing redis url: redis://[:password@]host[:port][/db]
         const url = new URL(redisUrl);
+        const prefix = config.get<string>('redis.keyPrefix');
         return {
           connection: {
             host: url.hostname,
@@ -61,6 +76,12 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
             password: url.password || undefined,
             username: url.username || undefined,
           },
+          // BullMQ namespaces its own keys, so it takes `prefix` rather than
+          // ioredis's keyPrefix — the latter would corrupt the Lua scripts it
+          // uses to move jobs between states. Left at BullMQ's own default
+          // when unset, so existing queues keep their names and in-flight
+          // jobs are still found after a deploy.
+          prefix: prefix ? `${prefix}:bull` : 'bull',
         };
       },
     }),

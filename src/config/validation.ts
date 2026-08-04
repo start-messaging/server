@@ -82,6 +82,12 @@ export const envValidationSchema = Joi.object({
 
   // Redis
   REDIS_URL: Joi.string().optional(),
+  // Colons are the separator, so a prefix containing one would nest
+  // unpredictably; letters, digits, dashes and underscores only.
+  REDIS_KEY_PREFIX: Joi.string()
+    .pattern(/^[A-Za-z0-9_-]*$/)
+    .allow('')
+    .default(''),
 
   // Mailgun
   MAILGUN_API_KEY: Joi.string().optional(),

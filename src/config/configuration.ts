@@ -11,6 +11,10 @@ export default () => ({
   },
   redis: {
     url: process.env.REDIS_URL,
+    // Namespaces every key this instance writes. Empty in production, so its
+    // keys keep the names they already have; staging sets it so that pointing
+    // two environments at one Redis cannot make them share a queue.
+    keyPrefix: process.env.REDIS_KEY_PREFIX ?? '',
   },
   auth: {
     bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS ?? '10', 10),
