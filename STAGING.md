@@ -74,14 +74,31 @@ row counts matched production exactly.
 
 ## Still to be connected
 
-- **The three staging Workers have no route.** `dashboard-staging`,
-  `admin-panel-staging` and `partners-staging` are uploaded but unreachable —
-  the account has no `workers.dev` subdomain, and the API token in use has
-  `zone (read)` only, so neither a `workers.dev` URL nor a custom domain can
-  be created without an account-level change.
-- **`CLOUDFLARE_API_TOKEN`** is the one CI secret not set; the local wrangler
-  uses OAuth, which CI cannot.
-- **A real hostname.** `nip.io` resolves to the box's IP with no DNS record,
-  which is why staging works today. Pointing `api-staging.startmessaging.com`
-  at `3.110.128.86` and reissuing the certificate is a better long-term
-  answer.
+The front-ends are the one part not finished, and the reason is access rather
+than code.
+
+- **The local wrangler is logged into the wrong Cloudflare account.** It
+  authenticates as `geetaapppublications@gmail.com`, account
+  `16a0f9b007c4ba730d926a11e709e7a3`. That account does **not** contain the
+  `startmessaging.com` zone (a zone lookup returns nothing) and does **not**
+  contain the production `dashboard`, `admin-panel` or `partners` Workers —
+  all three return 404. What it does contain is the unrelated `mathe*`
+  Workers. Production is therefore served from a different account that this
+  machine has no credentials for.
+- **Consequence:** `stage-app`, `stage-admin` and `stage-partners` records
+  cannot be created from here, and the staging Workers uploaded so far
+  (`dashboard-staging`, `admin-panel-staging`) went into that wrong account,
+  where they are unreachable and can be deleted. `partners-staging` never
+  uploaded at all.
+- **What unblocks it:** `wrangler login` against the account that owns
+  `startmessaging.com`, or an API token for that account with
+  Workers Scripts:Edit, Workers Routes:Edit and Zone:DNS:Edit. The same token
+  becomes the `CLOUDFLARE_API_TOKEN` secret the deploy workflows need — the
+  one CI secret still unset, because the local wrangler uses OAuth and CI
+  cannot.
+- **A real API hostname.** `nip.io` resolves to the box's IP with no DNS
+  record at all, which is why staging works today with a valid certificate.
+  Once there is DNS access, `stage-api.startmessaging.com` pointed at
+  `3.110.128.86` plus `certbot --nginx -d stage-api.startmessaging.com` is a
+  two-minute change; only `STAGING_API_URL` and the front-end builds refer to
+  the old name.
