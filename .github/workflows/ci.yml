@@ -2,9 +2,12 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, upgrade]
+    branches: [main, upgrade, staging]
   push:
-    branches: [main, upgrade]
+    branches: [main, upgrade, staging]
+  # Callable so the staging deploy can gate on the same suite rather than
+  # keeping a second, drifting copy of it.
+  workflow_call:
 
 # A second push to the same branch cancels the first — no point finishing a run
 # for a commit nobody will merge.

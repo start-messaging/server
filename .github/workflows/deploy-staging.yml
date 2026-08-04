@@ -1,0 +1,77 @@
+name: Deploy staging
+
+# Staging tracks the `staging` branch. Nothing here runs off `main`: this
+# workflow can restart a process and run migrations, and the production API
+# shares a host with it, so it is deliberately impossible to point at prod by
+# pushing to the wrong branch.
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+# Never two deploys at once — the second would build into the same directory
+# while the first is still reading it. Not cancel-in-progress: a half-finished
+# deploy that gets killed leaves the app down.
+concurrency:
+  group: deploy-staging-server
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+
+    steps:
+      - name: Open an SSH session to the staging host
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "${{ secrets.STAGING_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # One script, run remotely, so the deploy is a single unit that either
+      # finishes or leaves the previous release running.
+      - name: Build and release
+        run: |
+          ssh -i ~/.ssh/deploy.pem "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd ~/server-staging
+
+          git fetch --quiet origin staging
+          git checkout --quiet staging
+          git reset --quiet --hard origin/staging
+
+          # The box has 2 GB of RAM and runs production alongside this, so the
+          # build is capped rather than left to grow into the production
+          # process's memory.
+          export NODE_OPTIONS=--max-old-space-size=640
+          npm ci --no-audit --no-fund
+          npm run build
+
+          # Migrations run before the restart, so the new code never meets an
+          # old schema. They are transactional, so a failure here stops the
+          # deploy with the previous release still serving.
+          npm run migration:run
+
+          pm2 restart startmessaging-staging --update-env
+          REMOTE
+
+      - name: Prove it came back up
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ secrets.STAGING_API_URL }}/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "staging healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "staging did not return a healthy /health within 30s"
+          ssh -i ~/.ssh/deploy.pem "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" \
+            'pm2 logs startmessaging-staging --lines 40 --nostream'
+          exit 1
