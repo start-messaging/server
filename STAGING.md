@@ -6,23 +6,28 @@ data before it reaches production.
 
 | | Production | Staging |
 |---|---|---|
-| API | `api.startmessaging.com` → `:5000` | `api-staging.3-110-128-86.nip.io` → `:5001` |
+| API | `api.startmessaging.com` → `:5000` | `stage-api.startmessaging.com` → `:5001` |
 | pm2 process | `startmessaging-server` | `startmessaging-staging` |
 | Directory | `~/server` | `~/server-staging` |
 | Branch | `main` | `staging` |
+| Dashboard | `app.startmessaging.com` | `stage-app.startmessaging.com` |
+| Admin | `admin.startmessaging.com` | `stage-admin.startmessaging.com` |
+| Partners | *not deployed* | `stage-partners.startmessaging.com` |
 | Database | `postgres` on RDS | `startmessaging_staging` on the same RDS instance |
 | Redis | Redis Cloud | `redis://127.0.0.1:6379` on the box, prefix `staging:` |
 | SMS | live providers | `MOCK_SMS_SEND=true` — nothing is ever sent |
-| Payments | live Razorpay keys | none configured |
+| Payments | Razorpay `rzp_live_…` | Razorpay `rzp_test_…` |
 
 ## What staging deliberately cannot do
 
 The staging database began as a restore of production, which means **the user
 IDs are the same as production's**. That fact drives most of what follows.
 
-- **No Razorpay keys.** Production runs `rzp_live_…`. Any staging checkout on
-  those keys would move real money, so staging has none and the payment flow
-  returns an error until someone adds `rzp_test_…` keys.
+- **Razorpay test keys only.** Production runs `rzp_live_…`; staging runs
+  `rzp_test_…`, a different account mode, so a checkout here cannot move real
+  money no matter what the client sends. There is no
+  `RAZORPAY_WEBHOOK_SECRET`, so gateway webhooks are the one payment path
+  staging cannot exercise.
 - **No SMS provider keys, and `MOCK_SMS_SEND=true`.** Two independent reasons
   a staging message cannot reach a handset.
 - **No Mailgun key.** Every staging address was rewritten to
@@ -72,33 +77,41 @@ Snapshots are listed in `~/.sm-ops/LATEST_SNAPSHOT`. The restore path has been
 exercised, not assumed: a snapshot was restored to a scratch database and its
 row counts matched production exactly.
 
-## Still to be connected
+## Cloudflare
 
-The front-ends are the one part not finished, and the reason is access rather
-than code.
+Everything lives in the account that owns the zone,
+`Startmessagingdotcom@gmail.com's Account`
+(`6f25299ceeb0e04e343afd7f32abb715`), zone `startmessaging.com`.
 
-- **The local wrangler is logged into the wrong Cloudflare account.** It
-  authenticates as `geetaapppublications@gmail.com`, account
-  `16a0f9b007c4ba730d926a11e709e7a3`. That account does **not** contain the
-  `startmessaging.com` zone (a zone lookup returns nothing) and does **not**
-  contain the production `dashboard`, `admin-panel` or `partners` Workers —
-  all three return 404. What it does contain is the unrelated `mathe*`
-  Workers. Production is therefore served from a different account that this
-  machine has no credentials for.
-- **Consequence:** `stage-app`, `stage-admin` and `stage-partners` records
-  cannot be created from here, and the staging Workers uploaded so far
-  (`dashboard-staging`, `admin-panel-staging`) went into that wrong account,
-  where they are unreachable and can be deleted. `partners-staging` never
-  uploaded at all.
-- **What unblocks it:** `wrangler login` against the account that owns
-  `startmessaging.com`, or an API token for that account with
-  Workers Scripts:Edit, Workers Routes:Edit and Zone:DNS:Edit. The same token
-  becomes the `CLOUDFLARE_API_TOKEN` secret the deploy workflows need — the
-  one CI secret still unset, because the local wrangler uses OAuth and CI
-  cannot.
-- **A real API hostname.** `nip.io` resolves to the box's IP with no DNS
-  record at all, which is why staging works today with a valid certificate.
-  Once there is DNS access, `stage-api.startmessaging.com` pointed at
-  `3.110.128.86` plus `certbot --nginx -d stage-api.startmessaging.com` is a
-  two-minute change; only `STAGING_API_URL` and the front-end builds refer to
-  the old name.
+Worth knowing, because it cost an afternoon: the `wrangler` login on the
+development machine authenticates a *different* account
+(`geetaapppublications@gmail.com`), which holds the unrelated `mathe`
+Workers and does not contain this zone at all. A `wrangler deploy` from
+there uploads successfully and then fails only at the routing step, which
+reads like a permissions problem on the right account rather than success
+against the wrong one. CI does not have this hazard: it authenticates with
+`CLOUDFLARE_API_TOKEN`, which is scoped to the correct account.
+
+The three staging front-ends are Workers with Custom Domains attached:
+
+| Hostname | Worker |
+|---|---|
+| `stage-app.startmessaging.com` | `dashboard-staging` |
+| `stage-admin.startmessaging.com` | `admin-panel-staging` |
+| `stage-partners.startmessaging.com` | `partners-staging` |
+
+`stage-api` is a plain unproxied `A` record to the EC2 box, matching
+`api.startmessaging.com` — the origin terminates its own TLS via certbot, so
+putting Cloudflare in front of it would add a second, pointless hop.
+
+The production `partners` Worker does not exist. The partner portal has only
+ever been deployed to staging.
+
+## The one guard worth explaining
+
+The front-end deploys refuse to ship a bundle that references the production
+API. That check is anchored on the scheme — `https://api.startmessaging.com`
+— because `stage-api.startmessaging.com` *contains* `api.startmessaging.com`
+as a substring, and the naive pattern matched every staging bundle. It now
+also asserts the staging URL *is* present, so a build where the environment
+silently failed to apply is caught rather than deployed.
