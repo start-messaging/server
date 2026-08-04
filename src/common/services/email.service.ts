@@ -167,10 +167,22 @@ export class EmailService {
       .trim();
   }
 
-  /** Links shown in KYC-related emails (submission + status). */
+  /**
+   * Links shown in KYC-related emails (submission + status).
+   *
+   * Reads the same base URL the affiliate referral links use, rather than
+   * hardcoding the production host: a non-production deployment that sends
+   * mail would otherwise walk the recipient into production, where their
+   * account does not exist. The default is unchanged, so production is
+   * unaffected.
+   */
   private kycAppLinksBlock(): string {
-    const signInUrl = 'https://app.startmessaging.com/sign-in';
-    const dashboardUrl = 'https://app.startmessaging.com/dashboard';
+    const base = (
+      this.config.get<string>('affiliate.referralBaseUrl') ??
+      'https://app.startmessaging.com'
+    ).replace(/\/$/, '');
+    const signInUrl = `${base}/sign-in`;
+    const dashboardUrl = `${base}/dashboard`;
     return `
       <div style="margin-top:24px;padding-top:20px;border-top:1px solid #e5e7eb;">
         <p style="margin:0 0 12px;font-size:14px;color:#374151;font-weight:600;">Go to your dashboard</p>
