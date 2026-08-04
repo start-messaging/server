@@ -48,6 +48,11 @@ export default () => ({
     twoFactor: {
       apiKey: process.env.TWOFACTOR_API_KEY,
       templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP',
+      // DLT sender header, required by the transactional endpoint used for
+      // multi-variable templates. Defaults to this account's approved header
+      // so no env change is needed to fix the voice-call fallback; override
+      // with TWOFACTOR_SENDER_ID for a different 2Factor account.
+      senderId: process.env.TWOFACTOR_SENDER_ID || 'STMSG',
     },
     console: {
       /** Log messages instead of sending them. Local development only. */

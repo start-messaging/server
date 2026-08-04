@@ -54,7 +54,11 @@ export class OtpService {
     }
 
     // 3. Render Template
-    const { body: smsContent, identifiers } = await this.renderOtpMessage(
+    const {
+      body: smsContent,
+      identifiers,
+      multiVariable,
+    } = await this.renderOtpMessage(
       dto.templateId,
       dto.variables as Record<string, string>,
     );
@@ -75,6 +79,7 @@ export class OtpService {
         to: dto.phoneNumber,
         content: smsContent,
         templateIdentifiers: identifiers,
+        multiVariable,
       });
 
       if (smsResult.status === 'failed') {
@@ -162,7 +167,11 @@ export class OtpService {
   private async renderOtpMessage(
     templateId?: string,
     variables?: Record<string, string>,
-  ): Promise<{ body: string; identifiers: Record<string, string> }> {
+  ): Promise<{
+    body: string;
+    identifiers: Record<string, string>;
+    multiVariable: boolean;
+  }> {
     let body: string | null = null;
     let identifiers: Record<string, string> = {};
 
@@ -173,6 +182,16 @@ export class OtpService {
         identifiers = (template.metadata as Record<string, string>) || {};
       }
     }
+
+    // Count the template's variables before substitution. A registered
+    // template with more than one {{variable}} cannot be delivered through
+    // 2Factor's single-variable OTP endpoint (which only fills the OTP), so it
+    // must go through the transactional path — otherwise 2Factor leaves the
+    // other variables empty and falls back to a voice call. The fallback body
+    // below is only reached when no template applies, and it uses the OTP
+    // endpoint, so it is deliberately excluded from this count.
+    const multiVariable =
+      (body?.match(/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/g) || []).length > 1;
 
     if (!body) {
       // Default fallback
@@ -191,7 +210,7 @@ export class OtpService {
       body = body.replaceAll(`{{${key}}}`, val);
     }
 
-    return { body, identifiers };
+    return { body, identifiers, multiVariable };
   }
 
   private async checkMobileRateLimit(phoneNumber: string) {
