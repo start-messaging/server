@@ -30,8 +30,15 @@ export default new DataSource({
    * partially-advanced schema.
    */
   migrationsTransactionMode: 'each',
-  ssl:
-    process.env.NODE_ENV === 'production'
-      ? { rejectUnauthorized: false }
-      : false,
+  // SSL follows DATABASE_SSL when set, else the old rule (on in production),
+  // so migrations run against a local Postgres with DATABASE_SSL=false while
+  // NODE_ENV stays 'production'. Kept identical to the runtime config in
+  // database.module.ts.
+  ssl: (
+    process.env.DATABASE_SSL !== undefined
+      ? process.env.DATABASE_SSL === 'true'
+      : process.env.NODE_ENV === 'production'
+  )
+    ? { rejectUnauthorized: false }
+    : false,
 });

@@ -81,6 +81,10 @@ export const envValidationSchema = Joi.object({
   OTP_COST: Joi.number().default(0.25),
 
   // Redis
+  // Overrides the default (SSL on in production). Set false to reach a local
+  // Postgres that has no TLS while still running as NODE_ENV=production.
+  DATABASE_SSL: Joi.boolean().optional(),
+
   REDIS_URL: Joi.string().optional(),
   // Colons are the separator, so a prefix containing one would nest
   // unpredictably; letters, digits, dashes and underscores only.
