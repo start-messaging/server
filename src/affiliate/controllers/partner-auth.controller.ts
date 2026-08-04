@@ -20,6 +20,7 @@ import {
   PartnerAuthService,
 } from '../auth/partner-auth.service.js';
 import {
+  PartnerGoogleAuthDto,
   PartnerLoginDto,
   PartnerRegisterDto,
 } from '../dto/partner-auth.dto.js';
@@ -48,6 +49,26 @@ export class PartnerAuthController {
   @ApiOperation({ summary: 'Apply to join the affiliate programme' })
   async register(@Body() dto: PartnerRegisterDto) {
     return this.partnerAuthService.register(dto);
+  }
+
+  @Post('google')
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @ApiOperation({ summary: 'Partner Google OAuth sign-in' })
+  async googleAuth(
+    @Body() dto: PartnerGoogleAuthDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { accessToken, refreshToken, partner, isNewPartner } =
+      await this.partnerAuthService.googleAuth(dto.idToken, req.ip ?? '');
+
+    res.cookie(
+      PARTNER_REFRESH_COOKIE,
+      `${partner.id}:${refreshToken}`,
+      this.partnerAuthService.getRefreshCookieOptions(),
+    );
+
+    return { accessToken, partner, isNewPartner };
   }
 
   @Post('login')

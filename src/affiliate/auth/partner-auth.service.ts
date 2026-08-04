@@ -8,6 +8,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { CookieOptions } from 'express';
 import * as bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { PartnersService } from '../services/partners.service.js';
 import { Partner, PartnerStatus } from '../entities/partner.entity.js';
 
@@ -32,11 +33,18 @@ const UUID_PATTERN =
 
 @Injectable()
 export class PartnerAuthService {
+  private readonly googleClient: OAuth2Client | null;
+
   constructor(
     private readonly partnersService: PartnersService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    const googleClientId = this.config.get<string>('google.clientId');
+    this.googleClient = googleClientId
+      ? new OAuth2Client(googleClientId)
+      : null;
+  }
 
   async register(data: {
     email: string;
@@ -81,7 +89,61 @@ export class PartnerAuthService {
     return this.issueTokens(partner);
   }
 
+  /**
+   * Google OAuth sign-in for the partner portal.
+   *
+   * If the email matches an existing active partner, sign them in.
+   * If no partner exists, auto-create a pending account — the admin
+   * approval flow is preserved and the partner sees a "pending" screen.
+   */
+  async googleAuth(idToken: string, ip: string) {
+    if (!this.googleClient) {
+      throw new UnauthorizedException(
+        'Google authentication is not configured',
+      );
+    }
+
+    const ticket = await this.googleClient
+      .verifyIdToken({
+        idToken,
+        audience: this.config.get<string>('google.clientId'),
+      })
+      .catch(() => {
+        throw new UnauthorizedException('Invalid Google ID token');
+      });
+
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      throw new UnauthorizedException('Invalid Google ID token');
+    }
+
+    const { email, given_name, family_name } = payload;
+
+    const existing = await this.partnersService.findByEmail(email);
+    if (existing) {
+      if (existing.status === PartnerStatus.SUSPENDED) {
+        throw new ForbiddenException('This affiliate account is suspended.');
+      }
+      if (existing.status === PartnerStatus.REJECTED) {
+        throw new ForbiddenException(
+          'Your affiliate application was not approved.',
+        );
+      }
+      await this.partnersService.recordLogin(existing.id);
+      return { ...(await this.issueTokens(existing)), isNewPartner: false };
+    }
+
+    const partner = await this.partnersService.registerFromGoogle({
+      email,
+      firstName: given_name ?? '',
+      lastName: family_name ?? '',
+    });
+
+    return { ...(await this.issueTokens(partner)), isNewPartner: true };
+  }
+
   /** Rejects partners who exist but must not hold a session. */
+
   private assertUsable(partner: Partner): void {
     if (partner.status === PartnerStatus.PENDING) {
       throw new ForbiddenException(
@@ -233,6 +295,6 @@ export class PartnerAuthService {
     const base =
       this.config.get<string>('affiliate.referralBaseUrl') ??
       'https://app.startmessaging.com';
-    return `${base.replace(/\/$/, '')}/?ref=${referralCode}`;
+    return `${base.replace(/\/$/, '')}/sign-in?code=${referralCode}`;
   }
 }

@@ -58,3 +58,10 @@ export class PartnerLoginDto {
   @IsNotEmpty()
   password: string;
 }
+
+export class PartnerGoogleAuthDto {
+  @ApiProperty({ description: 'Google ID token from frontend' })
+  @IsString()
+  @IsNotEmpty()
+  idToken: string;
+}

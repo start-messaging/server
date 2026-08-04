@@ -101,6 +101,41 @@ export class PartnersService {
     return this.partnerRepo.save(partner);
   }
 
+  /**
+   * Auto-registers a partner from a Google sign-in.
+   *
+   * A random password hash is stored so the NOT NULL constraint on
+   * `passwordHash` is satisfied, but the partner can never sign in with
+   * email+password — the hash is not derived from any known input.
+   */
+  async registerFromGoogle(data: {
+    email: string;
+    firstName: string;
+    lastName: string;
+  }): Promise<Partner> {
+    const email = data.email.trim().toLowerCase();
+
+    const existing = await this.partnerRepo.findOne({ where: { email } });
+    if (existing) {
+      throw new BadRequestException(
+        'An affiliate account with this email already exists.',
+      );
+    }
+
+    const partner = this.partnerRepo.create({
+      email,
+      passwordHash: await bcrypt.hash(randomInt(2 ** 48).toString(36), 10),
+      firstName: data.firstName.trim(),
+      lastName: data.lastName.trim(),
+      phoneNumber: null,
+      companyName: null,
+      referralCode: await this.generateUniqueCode(),
+      status: PartnerStatus.PENDING,
+    });
+
+    return this.partnerRepo.save(partner);
+  }
+
   async findById(id: string): Promise<Partner | null> {
     return this.partnerRepo.findOne({ where: { id } });
   }
