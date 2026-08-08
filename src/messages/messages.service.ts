@@ -487,6 +487,83 @@ export class MessagesService {
     return paginateQueryBuilder(qb, { page, limit, withCount });
   }
 
+  /**
+   * Platform-wide message search, primarily "what happened to this number?".
+   *
+   * The per-user endpoint cannot answer that: it needs the customer to be
+   * known first, and when a recipient complains the only thing anyone has is
+   * the number. Returns the owning customer alongside each message so the
+   * trail leads somewhere, and joins the template for the same reason
+   * findByUserAdmin does.
+   *
+   * Admin-only. It deliberately crosses the tenant boundary, which is exactly
+   * why no customer-facing route may ever reach it.
+   */
+  async searchAllAdmin(
+    page: number,
+    limit: number,
+    filters: AdminMessageFilters = {},
+    sortBy?: string,
+    sortOrder?: string,
+    withCount = true,
+  ): Promise<[Message[], number]> {
+    const qb = this.messageRepository
+      .createQueryBuilder('m')
+      .withDeleted()
+      .leftJoinAndSelect('m.otpTemplate', 'otpTemplate')
+      // Named columns, never leftJoinAndSelect on the whole user: that entity
+      // carries passwordHash and refreshTokenHash, and this response is
+      // serialised straight to the admin client.
+      .leftJoin('m.user', 'user')
+      .addSelect([
+        'user.id',
+        'user.email',
+        'user.firstName',
+        'user.lastName',
+        'user.companyName',
+      ])
+      .where('m.deletedAt IS NULL');
+
+    if (filters.phoneNumber) {
+      // Digits only, so a search works whether the operator pastes
+      // "+91 90340 36898", "9034036898" or "919034036898". Backed by the
+      // phoneNumber trigram index.
+      const digits = filters.phoneNumber.replace(/\D/g, '');
+      if (digits) {
+        qb.andWhere('m.phoneNumber ILIKE :phone', { phone: `%${digits}%` });
+      }
+    }
+    if (filters.status) {
+      qb.andWhere('m.status = :status', { status: filters.status });
+    }
+    if (filters.provider) {
+      qb.andWhere('m.provider = :provider', { provider: filters.provider });
+    }
+    if (filters.otpTemplateId) {
+      qb.andWhere('m."otpTemplateId" = :otpTemplateId', {
+        otpTemplateId: filters.otpTemplateId,
+      });
+    }
+    if (filters.startDate) {
+      qb.andWhere('m.createdAt >= :startDate', {
+        startDate: new Date(filters.startDate),
+      });
+    }
+    if (filters.endDate) {
+      qb.andWhere('m.createdAt <= :endDate', {
+        endDate: new Date(filters.endDate),
+      });
+    }
+
+    applySort(
+      qb,
+      resolveSort(sortBy, MESSAGE_SORT_WHITELIST, 'created_at', sortOrder),
+    );
+    qb.addOrderBy('m.id', 'DESC');
+
+    return paginateQueryBuilder(qb, { page, limit, withCount });
+  }
+
   async getAdminUserStats(userId: string) {
     const result = await this.messageRepository
       .createQueryBuilder('m')

@@ -296,6 +296,39 @@ describe('delivery reconciliation (integration)', () => {
     expect(customer.failureReason).not.toMatch(/REJECTD/);
   });
 
+  it('finds a number across all customers, without leaking user secrets', async () => {
+    dlr = UNKNOWN_DLR;
+    const message = await messages.create({
+      userId,
+      phoneNumber: '+910000000000',
+      content: 'OTP sent',
+      provider: '2factor',
+      providerMsgId: `search-${Date.now()}`,
+      status: MessageStatus.FAILED,
+      costAmount: 0,
+      providerFailureReason: 'Access Denied - Balance is too low',
+      metadata: { intendedCost: OTP_COST },
+    });
+
+    // Searched the way an operator would paste it, with spaces and no country
+    // code — the lookup normalises to digits.
+    const [rows] = await messages.searchAllAdmin(1, 50, {
+      phoneNumber: '00000 00000',
+    });
+    const found = rows.find((m) => m.id === message.id)!;
+
+    expect(found).toBeDefined();
+    expect(found.user?.email).toContain('@test.invalid');
+    expect(found.providerFailureReason).toBe(
+      'Access Denied - Balance is too low',
+    );
+
+    // The join must never carry credentials into an HTTP response.
+    const serialised = JSON.parse(JSON.stringify(found));
+    expect(serialised.user).not.toHaveProperty('passwordHash');
+    expect(serialised.user).not.toHaveProperty('refreshTokenHash');
+  });
+
   it('excludes messages older than the provider keeps reports for', async () => {
     dlr = UNKNOWN_DLR;
     const ancient = await seedStuckMessage();

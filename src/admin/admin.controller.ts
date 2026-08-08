@@ -277,6 +277,30 @@ export class AdminController {
     return paginatedResponse(items, total, query.page, query.limit);
   }
 
+  @Get('messages')
+  @ApiOperation({
+    summary:
+      'Platform-wide message search (admin). Primarily "what happened to this number?"',
+  })
+  async searchMessages(@Query() query: AdminMessageQueryDto) {
+    const [items, total] = await this.messagesService.searchAllAdmin(
+      query.page,
+      query.limit,
+      {
+        startDate: query.startDate,
+        endDate: query.endDate,
+        status: query.status,
+        phoneNumber: query.phoneNumber,
+        provider: query.provider,
+        otpTemplateId: query.otpTemplateId,
+      },
+      query.sortBy,
+      query.sortOrder,
+      query.shouldCount,
+    );
+    return paginatedResponse(items, total, query.page, query.limit);
+  }
+
   @Get('users/:userId/transactions')
   @ApiOperation({
     summary: 'Wallet transactions for a user (paginated, filterable, sortable)',

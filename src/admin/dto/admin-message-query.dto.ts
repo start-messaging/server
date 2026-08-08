@@ -46,6 +46,11 @@ export class AdminMessageQueryDto extends PaginationQueryDto {
   @MaxLength(50)
   provider?: string;
 
+  @ApiPropertyOptional({ format: 'uuid', description: 'Filter by OTP template' })
+  @IsOptional()
+  @IsUUID()
+  otpTemplateId?: string;
+
   @ApiPropertyOptional({ enum: MESSAGE_SORT_FIELDS, default: 'created_at' })
   @IsOptional()
   @IsIn([...MESSAGE_SORT_FIELDS])
