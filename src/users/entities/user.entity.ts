@@ -1,4 +1,5 @@
-import { Column, Entity } from 'typeorm';
+import { Column, Entity, ManyToMany } from 'typeorm';
+import { Tag } from '../../tags/entities/tag.entity.js';
 import { BaseEntity } from '../../common/entities/base.entity.js';
 import { UserRole } from '../enums/user-role.enum.js';
 import { KycStatus } from '../enums/kyc-status.enum.js';
@@ -95,4 +96,11 @@ export class User extends BaseEntity {
 
   @Column({ type: 'text', nullable: true, select: false })
   adminCallNotes: string | null;
+
+  /**
+   * Admin-only labels. Deliberately not in any customer projection — these
+   * are internal notes about the account, not the customer's own data.
+   */
+  @ManyToMany(() => Tag, (tag) => tag.users)
+  tags: Tag[];
 }

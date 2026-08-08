@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  Put,
   Get,
   NotFoundException,
   Param,
@@ -29,6 +30,8 @@ import { ApiKeysService } from '../api-keys/api-keys.service.js';
 import { PaymentsService } from '../payments/payments.service.js';
 import { AdminUpdateUserDto } from './dto/admin-update-user.dto.js';
 import { AdminTopupDto } from './dto/admin-topup.dto.js';
+import { TagsService } from '../tags/tags.service.js';
+import { CreateTagDto, SetUserTagsDto } from '../tags/dto/tag.dto.js';
 import { ReviewKycDto } from './dto/review-kyc.dto.js';
 import { KycFilterQueryDto } from './dto/kyc-filter-query.dto.js';
 import { AdminMessageQueryDto } from './dto/admin-message-query.dto.js';
@@ -52,6 +55,7 @@ export class AdminController {
     private readonly walletService: WalletService,
     private readonly apiKeysService: ApiKeysService,
     private readonly paymentsService: PaymentsService,
+    private readonly tagsService: TagsService,
   ) {}
 
   // User management
@@ -228,7 +232,21 @@ export class AdminController {
       query.search,
       query.shouldCount,
     );
-    return paginatedResponse(items, total, query.page, query.limit);
+
+    // Tags and metrics for the page's users in one batch, so the breakdown can
+    // be read as "who is this account" rather than just "how many did they
+    // send". Only the visible rows are enriched, never the whole table.
+    const summaries = await this.tagsService.getSummaries(
+      items.map((row) => row.user.id),
+    );
+    const enriched = items.map((row) => ({
+      ...row,
+      tags: summaries.get(row.user.id)?.manual ?? [],
+      derivedTags: summaries.get(row.user.id)?.derived ?? [],
+      metrics: summaries.get(row.user.id)?.metrics ?? null,
+    }));
+
+    return paginatedResponse(enriched, total, query.page, query.limit);
   }
 
   // Customer detail
@@ -237,19 +255,24 @@ export class AdminController {
     summary: 'Customer overview: wallet, message stats, API key count',
   })
   async getUserOverview(@Param('userId', ParseUUIDPipe) userId: string) {
-    const [wallet, messageStats, apiKeyCount, messagesTrend] =
+    const [wallet, messageStats, apiKeyCount, messagesTrend, summaries] =
       await Promise.all([
         this.walletService.getWallet(userId),
         this.messagesService.getAdminUserStats(userId),
         this.apiKeysService.countByUser(userId),
         this.messagesService.getDashboardTrends(userId, 7),
+        this.tagsService.getSummaries([userId]),
       ]);
 
+    const summary = summaries.get(userId);
     return {
       wallet: { balance: Number(wallet.balance), currency: wallet.currency },
       messages: messageStats,
       apiKeyCount,
       messagesTrend,
+      tags: summary?.manual ?? [],
+      derivedTags: summary?.derived ?? [],
+      metrics: summary?.metrics ?? null,
     };
   }
 
@@ -346,6 +369,50 @@ export class AdminController {
       balanceAfter: Number(transaction.balanceAfter),
       transactionId: transaction.id,
     };
+  }
+
+  // Tags — admin-only labelling of customer accounts
+  @Get('tags')
+  @ApiOperation({ summary: 'List all tags (admin)' })
+  async listTags() {
+    return this.tagsService.findAll();
+  }
+
+  @Post('tags')
+  @ApiOperation({ summary: 'Create a tag (admin)' })
+  async createTag(@Body() dto: CreateTagDto) {
+    return this.tagsService.create(dto);
+  }
+
+  @Delete('tags/:id')
+  @ApiOperation({ summary: 'Delete a tag (admin)' })
+  async deleteTag(@Param('id', ParseUUIDPipe) id: string) {
+    await this.tagsService.remove(id);
+    return { deleted: true };
+  }
+
+  @Get('users/:userId/tags')
+  @ApiOperation({
+    summary: 'Manual and derived tags for a customer (admin)',
+  })
+  async getUserTags(@Param('userId', ParseUUIDPipe) userId: string) {
+    const summaries = await this.tagsService.getSummaries([userId]);
+    return summaries.get(userId) ?? { userId, manual: [], derived: [] };
+  }
+
+  @Put('users/:userId/tags')
+  @ApiOperation({
+    summary: "Replace a customer's manual tags (admin)",
+    description:
+      'Takes the complete tag set, not a delta, so two admins editing the ' +
+      'same account cannot interleave into a half-applied state.',
+  })
+  async setUserTags(
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SetUserTagsDto,
+    @CurrentUser('id') adminUserId: string,
+  ) {
+    return this.tagsService.setUserTags(userId, dto.tagIds, adminUserId);
   }
 
   @Get('users/:userId/transactions')

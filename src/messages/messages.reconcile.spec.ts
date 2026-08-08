@@ -7,6 +7,7 @@ import { WalletTransaction } from '../wallet/entities/wallet-transaction.entity.
 import { User } from '../users/entities/user.entity.js';
 import { OtpTemplate } from '../channels/entities/otp-template.entity.js';
 import { Channel } from '../channels/entities/channel.entity.js';
+import { Tag } from '../tags/entities/tag.entity.js';
 
 /**
  * Exercises the reconciliation path against a real Postgres, because the part
@@ -72,6 +73,7 @@ describe('delivery reconciliation (integration)', () => {
         User,
         OtpTemplate,
         Channel,
+        Tag,
       ],
       synchronize: false,
       logging: false,
