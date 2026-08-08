@@ -28,6 +28,7 @@ import { WalletService } from '../wallet/wallet.service.js';
 import { ApiKeysService } from '../api-keys/api-keys.service.js';
 import { PaymentsService } from '../payments/payments.service.js';
 import { AdminUpdateUserDto } from './dto/admin-update-user.dto.js';
+import { AdminTopupDto } from './dto/admin-topup.dto.js';
 import { ReviewKycDto } from './dto/review-kyc.dto.js';
 import { KycFilterQueryDto } from './dto/kyc-filter-query.dto.js';
 import { AdminMessageQueryDto } from './dto/admin-message-query.dto.js';
@@ -299,6 +300,52 @@ export class AdminController {
       query.shouldCount,
     );
     return paginatedResponse(items, total, query.page, query.limit);
+  }
+
+  @Post('wallet/topup')
+  @ApiOperation({
+    summary: 'Manually credit a customer wallet (admin)',
+    description:
+      'Looks the customer up by email and credits their wallet. The ' +
+      'description is shown to the customer in their transaction history.',
+  })
+  async topupWallet(
+    @Body() dto: AdminTopupDto,
+    @CurrentUser('id') adminUserId: string,
+  ) {
+    const user = await this.usersService.findByEmail(dto.email);
+    if (!user) {
+      throw new NotFoundException(`No customer found with email ${dto.email}`);
+    }
+
+    // Recorded against the acting admin so a manual credit is always
+    // attributable — this is the one path that creates money without a
+    // payment behind it.
+    const reference = dto.internalNote
+      ? `${adminUserId} | ${dto.internalNote}`
+      : adminUserId;
+
+    const transaction = await this.walletService.credit(
+      user.id,
+      dto.amount,
+      dto.description,
+      'admin_topup',
+      reference,
+    );
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      },
+      amount: dto.amount,
+      description: dto.description,
+      balanceBefore: Number(transaction.balanceAfter) - dto.amount,
+      balanceAfter: Number(transaction.balanceAfter),
+      transactionId: transaction.id,
+    };
   }
 
   @Get('users/:userId/transactions')

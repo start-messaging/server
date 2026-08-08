@@ -53,6 +53,7 @@ const UNKNOWN_DLR = { status: 'unknown' as const };
 describe('delivery reconciliation (integration)', () => {
   let ds: DataSource;
   let messages: MessagesService;
+  let wallets: WalletService;
   let dlr: any;
   let userId: string;
 
@@ -77,7 +78,7 @@ describe('delivery reconciliation (integration)', () => {
     });
     await ds.initialize();
 
-    const wallets = new WalletService(
+    wallets = new WalletService(
       ds.getRepository(Wallet),
       ds.getRepository(WalletTransaction),
       ds.getRepository(User),
@@ -327,6 +328,34 @@ describe('delivery reconciliation (integration)', () => {
     const serialised = JSON.parse(JSON.stringify(found));
     expect(serialised.user).not.toHaveProperty('passwordHash');
     expect(serialised.user).not.toHaveProperty('refreshTokenHash');
+  });
+
+  it('credits a wallet for a manual admin top-up and records it in the ledger', async () => {
+    const tx = await wallets.credit(
+      userId,
+      500,
+      'Goodwill credit - failed sends on 2026-08-07',
+      'admin_topup',
+      'admin-uuid | ticket #412',
+    );
+
+    expect(Number(tx.balanceAfter)).toBeCloseTo(510, 4);
+    expect(await balance()).toBeCloseTo(510, 4);
+
+    const [row] = await ds.query(
+      `select t.type, t.amount, t.description, t."referenceType", t."referenceId"
+         from wallet_transactions t
+         join wallets w on w.id = t."walletId"
+        where w."userId" = $1 and t."referenceType" = 'admin_topup'`,
+      [userId],
+    );
+
+    // A manual credit is the one path that creates balance with no payment
+    // behind it, so it has to be attributable and legible in the ledger.
+    expect(row.type).toBe('credit');
+    expect(Number(row.amount)).toBe(500);
+    expect(row.description).toContain('Goodwill');
+    expect(row.referenceId).toContain('ticket #412');
   });
 
   it('excludes messages older than the provider keeps reports for', async () => {
