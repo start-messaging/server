@@ -90,6 +90,7 @@ test.describe('payout thresholds', () => {
         qualifiedReferrals: number;
         requiredReferrals: number;
         minPayoutAmount: number;
+        hasPayoutDetails: boolean;
       };
     }>(res);
     return body.payout;
@@ -269,6 +270,14 @@ test.describe('payout thresholds', () => {
       [partner.id],
     );
 
+    // The portal must say so too. Reporting "both conditions met" here and
+    // then paying nothing is how a partner discovers on the 25th that they
+    // lost the cycle to a blank field.
+    const elig = await eligibility(request);
+    expect(elig.hasPayoutDetails).toBe(false);
+    expect(elig.isEligible).toBe(false);
+    expect(elig.reason).toBe('missing_payout_details');
+
     const run = await runPayouts(request, admin.accessToken);
     expect(run.payoutsCreated).toBe(0);
 
@@ -292,6 +301,12 @@ test.describe('payout thresholds', () => {
         WHERE "id" = $1`,
       [partner.id],
     );
+
+    // A half-filled bank destination is no destination: the portal must not
+    // count it, exactly as the run does not.
+    const elig = await eligibility(request);
+    expect(elig.hasPayoutDetails).toBe(false);
+    expect(elig.reason).toBe('missing_payout_details');
 
     expect((await runPayouts(request, admin.accessToken)).payoutsCreated).toBe(
       0,
@@ -370,6 +385,20 @@ test.describe('payout thresholds', () => {
     await sql(`UPDATE "partners" SET "status" = 'suspended' WHERE "id" = $1`, [
       partner.id,
     ]);
+
+    // Read through the admin surface, not the partner dashboard: the partner
+    // JWT strategy rejects a suspended token outright, so `partner_not_active`
+    // is only ever observable by an admin looking at the account.
+    const detail = await request.get(
+      `/admin/affiliate/partners/${partner.id}`,
+      { headers: auth(admin.accessToken) },
+    );
+    expect(detail.ok(), await detail.text()).toBeTruthy();
+    const { payout: elig } = await payload<{
+      payout: { isEligible: boolean; reason?: string };
+    }>(detail);
+    expect(elig.isEligible).toBe(false);
+    expect(elig.reason).toBe('partner_not_active');
 
     expect((await runPayouts(request, admin.accessToken)).payoutsCreated).toBe(
       0,

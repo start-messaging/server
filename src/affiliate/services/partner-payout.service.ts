@@ -10,7 +10,9 @@ export type PayoutSkipReason =
   | 'not_enough_paid_referrals'
   | 'below_minimum_amount'
   | 'no_unpaid_earnings'
-  | 'already_paid_this_period';
+  | 'already_paid_this_period'
+  | 'missing_payout_details'
+  | 'partner_not_active';
 
 export interface PartnerPayoutEligibility {
   partnerId: string;
@@ -18,6 +20,16 @@ export interface PartnerPayoutEligibility {
   requiredReferrals: number;
   unpaidEarnings: number;
   minPayoutAmount: number;
+  /**
+   * Whether a usable payout destination is on file — a UPI id, or an account
+   * number and IFSC, matching `payoutMethod`.
+   *
+   * Surfaced as its own flag rather than only through `reason` because it is a
+   * standing condition the portal should show alongside the two thresholds. A
+   * partner who learns on the 25th that their details were missing has already
+   * lost the cycle; one who can see the gap from day one has not.
+   */
+  hasPayoutDetails: boolean;
   isEligible: boolean;
   reason?: PayoutSkipReason;
 }
@@ -51,32 +63,66 @@ export class PartnerPayoutService {
   /**
    * Whether a payout would be raised for this partner right now, and if not,
    * exactly what is missing. Powers the "progress to payout" panel in the
-   * portal, and is the same predicate the run itself uses so the two can never
-   * disagree.
+   * portal.
+   *
+   * Every condition the run applies is applied here too -- the two thresholds,
+   * the active status and the payout destination. That equivalence is the
+   * whole point of this method, and it is what the payout-threshold e2e specs
+   * assert: any predicate added to the run's candidate query must be added
+   * here in the same commit, or the portal starts promising money the run will
+   * not send.
    */
   async getEligibility(partnerId: string): Promise<PartnerPayoutEligibility> {
     const settings = await this.settingsService.get();
 
+    // The destination and status predicates mirror the run's candidate query
+    // exactly. They used to live only there, which meant a partner with no UPI
+    // id was told "both conditions met" by the portal and then silently passed
+    // over on the 25th -- the same divergence the ledger-vs-cache comment below
+    // describes, arriving by a different route.
     const [row] = await this.dataSource.query<
-      { qualified: string; unpaid: string }[]
+      {
+        qualified: string;
+        unpaid: string;
+        is_active: boolean;
+        has_payout_details: boolean;
+      }[]
     >(
       `
       SELECT
         (SELECT COUNT(*) FROM "referrals" r
-          WHERE r."partnerId" = $1
+          WHERE r."partnerId" = p."id"
             AND r."status" = 'qualified'
             AND r."deletedAt" IS NULL) AS qualified,
         (SELECT COALESCE(SUM(c."amount"), 0) FROM "partner_commissions" c
-          WHERE c."partnerId" = $1
+          WHERE c."partnerId" = p."id"
             AND c."status" = 'accrued'
-            AND c."deletedAt" IS NULL) AS unpaid
+            AND c."deletedAt" IS NULL) AS unpaid,
+        (p."status" = 'active') AS is_active,
+        (
+          p."payoutMethod" IS NOT NULL
+          AND (
+            (p."payoutMethod" = 'upi' AND p."upiId" IS NOT NULL)
+            OR (p."payoutMethod" = 'bank'
+                AND p."bankAccountNumber" IS NOT NULL
+                AND p."bankIfsc" IS NOT NULL)
+          )
+        ) AS has_payout_details
+      FROM "partners" p
+      WHERE p."id" = $1
+        AND p."deletedAt" IS NULL
       `,
       [partnerId],
     );
 
     const qualifiedReferrals = Number(row?.qualified ?? 0);
     const unpaidEarnings = Number(row?.unpaid ?? 0);
+    const hasPayoutDetails = row?.has_payout_details ?? false;
+    const isActive = row?.is_active ?? false;
 
+    // Ordered by what the partner can act on. The thresholds come first
+    // because they are the wait everyone has; the destination is checked last
+    // so "add your UPI id" only shouts once it is the single thing left.
     let reason: PayoutSkipReason | undefined;
     if (unpaidEarnings <= 0) {
       reason = 'no_unpaid_earnings';
@@ -84,6 +130,10 @@ export class PartnerPayoutService {
       reason = 'not_enough_paid_referrals';
     } else if (unpaidEarnings < settings.minPayoutAmount) {
       reason = 'below_minimum_amount';
+    } else if (!isActive) {
+      reason = 'partner_not_active';
+    } else if (!hasPayoutDetails) {
+      reason = 'missing_payout_details';
     }
 
     return {
@@ -92,6 +142,7 @@ export class PartnerPayoutService {
       requiredReferrals: settings.minPaidReferrals,
       unpaidEarnings,
       minPayoutAmount: settings.minPayoutAmount,
+      hasPayoutDetails,
       isEligible: !reason,
       reason,
     };
@@ -121,6 +172,11 @@ export class PartnerPayoutService {
       below_minimum_amount: 0,
       no_unpaid_earnings: 0,
       already_paid_this_period: 0,
+      // Both are filtered out by the candidate query rather than counted
+      // during settlement, so these stay at zero; they exist here because the
+      // record is keyed by the full reason union that `getEligibility` reports.
+      missing_payout_details: 0,
+      partner_not_active: 0,
     };
 
     const base = {
