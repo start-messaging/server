@@ -74,12 +74,18 @@ export class AdminController {
       query.sortOrder,
       query.shouldCount,
     );
-    const balances = await this.walletService.getBalancesByUserIds(
-      items.map((u) => u.id),
-    );
+    const ids = items.map((u) => u.id);
+    // Balances and tags in parallel, both batched over the visible page only.
+    const [balances, summaries] = await Promise.all([
+      this.walletService.getBalancesByUserIds(ids),
+      this.tagsService.getSummaries(ids),
+    ]);
     const sanitized = items.map((u) => ({
       ...excludePassword(u),
       walletBalance: balances.get(u.id) ?? 0,
+      tags: summaries.get(u.id)?.manual ?? [],
+      derivedTags: summaries.get(u.id)?.derived ?? [],
+      metrics: summaries.get(u.id)?.metrics ?? null,
     }));
     return paginatedResponse(sanitized, total, query.page, query.limit);
   }
