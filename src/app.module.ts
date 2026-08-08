@@ -20,6 +20,7 @@ import { OtpModule } from './otp/otp.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { AffiliateModule } from './affiliate/affiliate.module.js';
 import { ChannelsModule } from './channels/channels.module.js';
+import { EmailModule } from './email/email.module.js';
 import { CommonModule } from './common/common.module.js';
 import { RedisModule } from './common/redis.module.js';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware.js';
@@ -101,6 +102,7 @@ import { OnboardingGuard } from './common/guards/onboarding.guard.js';
     AdminModule,
     AffiliateModule,
     ChannelsModule,
+    EmailModule,
     RedisModule,
     WebhooksModule,
     TelemetryModule,

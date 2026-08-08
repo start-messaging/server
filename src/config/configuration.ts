@@ -76,6 +76,88 @@ export default () => ({
     fromEmail: process.env.MAILGUN_FROM_EMAIL,
     replyToEmail: process.env.MAILGUN_REPLY_TO_EMAIL,
   },
+  /**
+   * Outbound marketing / outreach campaigns.
+   *
+   * Deliberately its own config tree rather than an extension of `mailgun`.
+   * Campaign mail should leave by a different door from transactional mail —
+   * different sending domain, different credentials, often a different vendor
+   * entirely — because a complaint-driven reputation hit on outreach must not
+   * be able to stop a customer receiving their OTP or KYC result.
+   */
+  campaigns: {
+    /**
+     * Which transport carries campaign mail.
+     *
+     * `console` is the default so a fresh environment cannot email real people
+     * before anyone has consciously configured a sender.
+     */
+    transport: process.env.CAMPAIGN_TRANSPORT ?? 'console',
+
+    fromName: process.env.CAMPAIGN_FROM_NAME ?? 'StartMessaging',
+    fromEmail: process.env.CAMPAIGN_FROM_EMAIL,
+    /** Outreach gets answered — replies should reach a human, not no-reply. */
+    replyTo: process.env.CAMPAIGN_REPLY_TO,
+
+    /**
+     * Postal address printed in the footer of every campaign.
+     *
+     * Commercial email is required to carry one under CAN-SPAM, and filters
+     * treat its absence as a spam signal. Left blank the footer simply omits
+     * it, so a development environment needs no value.
+     */
+    companyAddress: process.env.CAMPAIGN_COMPANY_ADDRESS,
+
+    /**
+     * Public origin of THIS server, used to build tracking and unsubscribe
+     * links. It has to be reachable by the recipient's mail client, so it
+     * cannot be inferred from the request that created the campaign.
+     */
+    trackingBaseUrl: process.env.CAMPAIGN_TRACKING_BASE_URL,
+
+    /**
+     * Signs pixel, click and unsubscribe tokens.
+     *
+     * Kept apart from `jwt.secret` so a leaked tracking link can never be
+     * escalated into a session, and so this can be rotated without logging
+     * every customer out. Rotating it only invalidates the links inside
+     * already-delivered emails.
+     */
+    trackingSecret: process.env.CAMPAIGN_TRACKING_SECRET,
+
+    /**
+     * Ceiling on sends per minute, applied by the BullMQ worker.
+     *
+     * Free relays and personal mailboxes throttle hard and count a rejected
+     * message against you; pacing below the provider's limit is what keeps a
+     * campaign from tripping it a third of the way through.
+     */
+    sendRatePerMinute: Number(process.env.CAMPAIGN_SEND_RATE_PER_MINUTE ?? 30),
+
+    /**
+     * Hard stop on messages sent across all campaigns in a rolling 24h.
+     *
+     * Matches whatever the chosen transport's free daily allowance is, so a
+     * mistyped audience filter costs a paused campaign rather than a suspended
+     * sending account.
+     */
+    dailySendCap: Number(process.env.CAMPAIGN_DAILY_SEND_CAP ?? 250),
+
+    /** Any SMTP relay: Brevo, Zoho, Gmail/Workspace, SES, Mailjet, … */
+    smtp: {
+      host: process.env.CAMPAIGN_SMTP_HOST,
+      port: Number(process.env.CAMPAIGN_SMTP_PORT ?? 587),
+      user: process.env.CAMPAIGN_SMTP_USER,
+      pass: process.env.CAMPAIGN_SMTP_PASS,
+      /** Implicit TLS (port 465). Port 587 upgrades with STARTTLS instead. */
+      secure: process.env.CAMPAIGN_SMTP_SECURE === 'true',
+    },
+
+    /** Brevo's HTTP send API — same credentials as their SMTP relay. */
+    brevo: {
+      apiKey: process.env.CAMPAIGN_BREVO_API_KEY,
+    },
+  },
   payments: {
     razorpay: {
       keyId: process.env.RAZORPAY_KEY_ID,

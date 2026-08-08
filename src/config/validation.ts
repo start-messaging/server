@@ -100,6 +100,75 @@ export const envValidationSchema = Joi.object({
   MAILGUN_FROM_EMAIL: Joi.string().optional(),
   MAILGUN_REPLY_TO_EMAIL: Joi.string().email().optional(),
 
+  // Outreach campaigns
+  //
+  // Every field is optional and the transport defaults to `console`, so an
+  // environment that never runs a campaign needs no new configuration. The
+  // conditional requirements below only bite once a real transport is chosen —
+  // which is the moment a missing credential would otherwise surface as a
+  // half-sent campaign rather than a refused boot.
+  CAMPAIGN_TRANSPORT: Joi.string()
+    .valid('console', 'smtp', 'brevo', 'mailgun')
+    .default('console'),
+  CAMPAIGN_FROM_NAME: Joi.string().default('StartMessaging'),
+  CAMPAIGN_FROM_EMAIL: Joi.string()
+    .email()
+    .when('CAMPAIGN_TRANSPORT', {
+      is: 'console',
+      then: Joi.optional(),
+      otherwise: Joi.required(),
+    }),
+  CAMPAIGN_REPLY_TO: Joi.string().email().optional(),
+  CAMPAIGN_COMPANY_ADDRESS: Joi.string().max(300).optional(),
+
+  // Tracking links live in mail that outlives any single deploy, so the base
+  // URL must be an absolute, publicly reachable origin.
+  CAMPAIGN_TRACKING_BASE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .when('CAMPAIGN_TRANSPORT', {
+      is: 'console',
+      then: Joi.optional(),
+      otherwise: Joi.required(),
+    }),
+  CAMPAIGN_TRACKING_SECRET: Joi.string()
+    .min(32)
+    .when('CAMPAIGN_TRANSPORT', {
+      is: 'console',
+      then: Joi.optional(),
+      otherwise: Joi.required(),
+    })
+    .messages({
+      'string.min':
+        'CAMPAIGN_TRACKING_SECRET must be at least 32 characters — it signs unsubscribe links.',
+    }),
+
+  CAMPAIGN_SEND_RATE_PER_MINUTE: Joi.number().integer().min(1).default(30),
+  CAMPAIGN_DAILY_SEND_CAP: Joi.number().integer().min(1).default(250),
+
+  CAMPAIGN_SMTP_HOST: Joi.string().when('CAMPAIGN_TRANSPORT', {
+    is: 'smtp',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  CAMPAIGN_SMTP_PORT: Joi.number().port().default(587),
+  CAMPAIGN_SMTP_USER: Joi.string().when('CAMPAIGN_TRANSPORT', {
+    is: 'smtp',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  CAMPAIGN_SMTP_PASS: Joi.string().when('CAMPAIGN_TRANSPORT', {
+    is: 'smtp',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  CAMPAIGN_SMTP_SECURE: Joi.boolean().default(false),
+
+  CAMPAIGN_BREVO_API_KEY: Joi.string().when('CAMPAIGN_TRANSPORT', {
+    is: 'brevo',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+
   // Custom testing
   MOCK_SMS_SEND: Joi.boolean().default(false),
 
