@@ -130,18 +130,25 @@ export default () => ({
      *
      * Free relays and personal mailboxes throttle hard and count a rejected
      * message against you; pacing below the provider's limit is what keeps a
-     * campaign from tripping it a third of the way through.
+     * campaign from tripping it a third of the way through. One every five
+     * seconds also reads less like a blast to the receiving side.
      */
-    sendRatePerMinute: Number(process.env.CAMPAIGN_SEND_RATE_PER_MINUTE ?? 30),
+    sendRatePerMinute: Number(process.env.CAMPAIGN_SEND_RATE_PER_MINUTE ?? 12),
 
     /**
      * Hard stop on messages sent across all campaigns in a rolling 24h.
      *
-     * Matches whatever the chosen transport's free daily allowance is, so a
-     * mistyped audience filter costs a paused campaign rather than a suspended
-     * sending account.
+     * Defaults to a warmup volume rather than a provider's full allowance.
+     * A new sending domain that opens at a few hundred a day gets filtered;
+     * the accepted shape is roughly 10–20/day in week one, +50% a week, four
+     * to eight weeks to full volume. Raise this deliberately as the domain
+     * warms — the default should not be a number that damages a domain on the
+     * first campaign.
+     *
+     * For reference, Brevo's free tier allows 300/day, so this is well inside
+     * it and the ceiling that bites first is this one, on purpose.
      */
-    dailySendCap: Number(process.env.CAMPAIGN_DAILY_SEND_CAP ?? 250),
+    dailySendCap: Number(process.env.CAMPAIGN_DAILY_SEND_CAP ?? 50),
 
     /** Any SMTP relay: Brevo, Zoho, Gmail/Workspace, SES, Mailjet, … */
     smtp: {

@@ -300,7 +300,7 @@ export class EmailCampaignProcessor extends WorkerHost {
    */
   private async pace(): Promise<void> {
     const perMinute =
-      this.config.get<number>('campaigns.sendRatePerMinute') ?? 30;
+      this.config.get<number>('campaigns.sendRatePerMinute') ?? 12;
     if (perMinute <= 0) return;
     const gap = Math.ceil(60_000 / perMinute);
     await new Promise((resolve) => setTimeout(resolve, gap));

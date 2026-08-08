@@ -500,7 +500,7 @@ export class EmailCampaignsService {
    * campaign's budget.
    */
   async remainingDailyAllowance(): Promise<number> {
-    const cap = this.config.get<number>('campaigns.dailySendCap') ?? 250;
+    const cap = this.config.get<number>('campaigns.dailySendCap') ?? 50;
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const used = await this.recipients.count({

@@ -157,9 +157,9 @@ export class EmailPreviewService {
       isConfigured: this.transport.isConfigured,
       trackingConfigured: this.tracking.isConfigured,
       fromEmail: this.config.get<string>('campaigns.fromEmail') ?? null,
-      dailySendCap: this.config.get<number>('campaigns.dailySendCap') ?? 250,
+      dailySendCap: this.config.get<number>('campaigns.dailySendCap') ?? 50,
       sendRatePerMinute:
-        this.config.get<number>('campaigns.sendRatePerMinute') ?? 30,
+        this.config.get<number>('campaigns.sendRatePerMinute') ?? 12,
       mergeFields: MERGE_FIELDS,
     };
   }

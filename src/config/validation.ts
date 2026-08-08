@@ -142,8 +142,8 @@ export const envValidationSchema = Joi.object({
         'CAMPAIGN_TRACKING_SECRET must be at least 32 characters — it signs unsubscribe links.',
     }),
 
-  CAMPAIGN_SEND_RATE_PER_MINUTE: Joi.number().integer().min(1).default(30),
-  CAMPAIGN_DAILY_SEND_CAP: Joi.number().integer().min(1).default(250),
+  CAMPAIGN_SEND_RATE_PER_MINUTE: Joi.number().integer().min(1).default(12),
+  CAMPAIGN_DAILY_SEND_CAP: Joi.number().integer().min(1).default(50),
 
   CAMPAIGN_SMTP_HOST: Joi.string().when('CAMPAIGN_TRANSPORT', {
     is: 'smtp',
