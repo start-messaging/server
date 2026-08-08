@@ -4,7 +4,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
   EntityManager,
+  Between,
   FindOptionsWhere,
+  IsNull,
+  Not,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -54,6 +57,7 @@ export interface MessageFilters {
 export interface AdminMessageFilters extends MessageFilters {
   phoneNumber?: string;
   provider?: string;
+  otpTemplateId?: string;
 }
 
 @Injectable()
@@ -84,11 +88,12 @@ export class MessagesService {
       where: { id: messageId },
     });
 
-    // 2Factor delivery is webhook-driven; polling adds no value.
-    if (message.provider === '2factor') {
-      return this.pickCustomerFields(message);
-    }
-
+    // 2Factor used to be skipped here on the assumption that its webhook
+    // covers everything. It does not: the webhook fires only for sends made
+    // through the OTP endpoint, so every transactional send stayed `sent` and
+    // unbilled forever. Polling now runs for 2Factor too — its report API
+    // answers `unknown` for OTP-endpoint session ids, which falls through
+    // below and leaves the webhook in charge of those.
     if (!message.providerMsgId) return message;
 
     const dlr = await this.smsProviderFactory.getDeliveryStatus(
@@ -112,7 +117,15 @@ export class MessagesService {
       providerCost: dlr.providerCost || message.providerCost,
       providerStatusDescription:
         dlr.description || message.providerStatusDescription,
-      metadata: dlr.rawResponse || message.metadata,
+      failureReason: dlr.failureReason ?? message.failureReason,
+      providerFailureReason:
+        dlr.providerFailureReason ?? message.providerFailureReason,
+      // Keep the existing metadata and file the report beside it, rather than
+      // replacing the object — `intendedCost` lives here and the delivery
+      // debit reads it, so overwriting would zero the charge.
+      metadata: dlr.rawResponse
+        ? { ...(message.metadata ?? {}), report_payload: dlr.rawResponse }
+        : message.metadata,
     });
   }
 
@@ -316,6 +329,37 @@ export class MessagesService {
     });
   }
 
+  /**
+   * Messages left at `sent` long enough that no delivery receipt is coming.
+   *
+   * Bounded at *both* ends, and the older bound is the one that matters.
+   * `settledBefore` keeps very recent sends out — those are still plausibly
+   * awaiting a webhook, and polling them races it. `notBefore` excludes
+   * messages older than the provider's report retention: measured against
+   * 2Factor, reports vanish after roughly two to three days, and without this
+   * bound an oldest-first sweep would spend every batch re-asking about the
+   * same permanently unanswerable rows and never reach the ones it can still
+   * settle.
+   *
+   * Ordered oldest-first within that window so a backlog drains in the order
+   * it accumulated, and capped so one sweep cannot issue thousands of calls.
+   */
+  async findStaleSent(
+    notBefore: Date,
+    settledBefore: Date,
+    limit: number,
+  ): Promise<Message[]> {
+    return this.messageRepository.find({
+      where: {
+        status: MessageStatus.SENT,
+        providerMsgId: Not(IsNull()),
+        createdAt: Between(notBefore, settledBefore),
+      },
+      order: { createdAt: 'ASC' },
+      take: limit,
+    });
+  }
+
   async checkStatus(id: string, userId: string): Promise<Message> {
     const message = await this.messageRepository.findOne({
       where: { id, userId },
@@ -326,31 +370,18 @@ export class MessagesService {
     }
 
     const terminalStatuses = [MessageStatus.DELIVERED, MessageStatus.FAILED];
-    if (terminalStatuses.includes(message.status)) {
+    if (terminalStatuses.includes(message.status) || !message.providerMsgId) {
       return this.pickCustomerFields(message);
     }
 
-    if (!message.providerMsgId) {
-      return this.pickCustomerFields(message);
-    }
-
-    // 2Factor status progression is webhook-based; avoid redundant provider polling.
-    if (message.provider === '2factor') {
-      return this.pickCustomerFields(message);
-    }
-
-    const dlr = await this.smsProviderFactory.getDeliveryStatus(
-      message.provider,
-      message.providerMsgId,
-    );
-
-    const mappedStatus = this.mapProviderStatus(dlr.status);
-
-    if (mappedStatus && mappedStatus !== message.status) {
-      return this.syncProviderStatus(id);
-    }
-
-    return this.pickCustomerFields(message);
+    // Single exit through the projection. This used to branch four ways, and
+    // one branch returned `syncProviderStatus(id)` — a worker primitive that
+    // resolves to the whole entity — straight to the customer, provider
+    // columns and raw provider payload included. The 2Factor short-circuit
+    // that used to sit here was hiding that on the only live provider while
+    // also denying customers a fresh status for transactional sends, which
+    // receive no webhook at all.
+    return this.pickCustomerFields(await this.syncProviderStatus(id));
   }
 
   private mapProviderStatus(
@@ -397,7 +428,23 @@ export class MessagesService {
   ): Promise<[Message[], number]> {
     const qb = this.messageRepository
       .createQueryBuilder('m')
-      .where('m.userId = :userId', { userId });
+      // The template name, not just its id — an admin verifying which
+      // template produced a message cannot read a UUID. Joined as a relation
+      // rather than raw addSelect, because the shared pagination helper ends
+      // in getManyAndCount, which discards raw columns. Left join: rows
+      // predating the column have none, as does any send that fell through to
+      // the hardcoded fallback body.
+      //
+      // withDeleted is what makes this useful over time. Templates are soft-
+      // deleted, never removed, and TypeORM's soft-delete-aware join would
+      // otherwise return null for every message sent with a template that has
+      // since been retired — losing exactly the history this column exists to
+      // preserve. Messages are re-filtered explicitly below, so widening the
+      // join does not resurrect deleted messages.
+      .withDeleted()
+      .leftJoinAndSelect('m.otpTemplate', 'otpTemplate')
+      .where('m.userId = :userId', { userId })
+      .andWhere('m.deletedAt IS NULL');
 
     if (filters.startDate) {
       qb.andWhere('m.createdAt >= :startDate', {
@@ -411,6 +458,11 @@ export class MessagesService {
     }
     if (filters.status) {
       qb.andWhere('m.status = :status', { status: filters.status });
+    }
+    if (filters.otpTemplateId) {
+      qb.andWhere('m."otpTemplateId" = :otpTemplateId', {
+        otpTemplateId: filters.otpTemplateId,
+      });
     }
     if (filters.phoneNumber) {
       // Backed by the phoneNumber trigram index, so a leading-wildcard match

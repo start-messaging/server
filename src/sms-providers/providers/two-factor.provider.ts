@@ -7,6 +7,14 @@ import {
   SendSmsResult,
   DlrResult,
 } from '../sms-provider.interface.js';
+import {
+  GENERIC_FAILURE_REASON,
+  TWO_FACTOR_ERROR_MAP,
+  customerFacingReason,
+  mapTwoFactorStatusName,
+  normalizeErrorCode,
+  parseIstTimestamp,
+} from './two-factor-status.js';
 
 @Injectable()
 export class TwoFactorProvider implements SmsProvider {
@@ -20,7 +28,8 @@ export class TwoFactorProvider implements SmsProvider {
     this.apiKey = this.config.get<string>('sms.twoFactor.apiKey') ?? '';
     this.templateName =
       this.config.get<string>('sms.twoFactor.templateName') ?? 'OTP';
-    this.senderId = this.config.get<string>('sms.twoFactor.senderId') ?? 'STMSG';
+    this.senderId =
+      this.config.get<string>('sms.twoFactor.senderId') ?? 'STMSG';
   }
 
   get name(): string {
@@ -71,10 +80,20 @@ export class TwoFactorProvider implements SmsProvider {
         };
       }
 
+      // 2Factor answers HTTP 200 with Status:Error for a rejected send, so
+      // this branch — not the catch below — is where real refusals land. It
+      // logged nothing until 2026-08-08, which is why a fortnight of
+      // "All SMS providers failed" rows have no recoverable cause.
+      this.logger.error(
+        `2Factor.in rejected OTP send to ${params.to}: ${JSON.stringify(response.data)}`,
+      );
       return {
         providerMsgId: '',
         status: 'failed',
-        failureReason: response.data.Details || 'Unknown error',
+        failureReason: GENERIC_FAILURE_REASON,
+        providerFailureReason: String(
+          response.data?.Details ?? 'Unknown error',
+        ),
         errorType: 'service',
       };
     } catch (error: any) {
@@ -83,7 +102,8 @@ export class TwoFactorProvider implements SmsProvider {
       return {
         providerMsgId: '',
         status: 'failed',
-        failureReason: errorMessage,
+        failureReason: GENERIC_FAILURE_REASON,
+        providerFailureReason: String(errorMessage),
         errorType: 'service',
       };
     }
@@ -125,10 +145,19 @@ export class TwoFactorProvider implements SmsProvider {
         };
       }
 
+      // As in sendSms: a refusal arrives as HTTP 200 + Status:Error, so the
+      // catch block never sees it and nothing recorded why.
+      this.logger.error(
+        `2Factor.in rejected transactional send to ${params.to} ` +
+          `(from ${this.senderId}): ${JSON.stringify(response.data)}`,
+      );
       return {
         providerMsgId: '',
         status: 'failed',
-        failureReason: response.data.Details || 'Unknown error',
+        failureReason: GENERIC_FAILURE_REASON,
+        providerFailureReason: String(
+          response.data?.Details ?? 'Unknown error',
+        ),
         errorType: 'service',
       };
     } catch (error: any) {
@@ -137,21 +166,114 @@ export class TwoFactorProvider implements SmsProvider {
       return {
         providerMsgId: '',
         status: 'failed',
-        failureReason: errorMessage,
+        failureReason: GENERIC_FAILURE_REASON,
+        providerFailureReason: String(errorMessage),
         errorType: 'service',
       };
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  getDeliveryStatus(providerMsgId: string): Promise<DlrResult> {
-    // 2Factor.in OTP API primarily uses webhooks for status updates.
-    // The "PULL" API is not consistently documented for special OTP session IDs.
-    // We return 'unknown' and rely on the webhook-driven flow.
-    return Promise.resolve({
-      status: 'unknown',
-      description: 'DLR tracking handled via webhooks',
-    });
+  /**
+   * Reads a message's fate from 2Factor's transactional report API.
+   *
+   * This exists because 2Factor posts DLR webhooks only for sends made through
+   * the OTP endpoint (`mode=SMS_OTP`); messages sent through the transactional
+   * endpoint never produce one. Measured on production: of 100 transactional
+   * sends, 0 received a webhook, against 3,956 of 3,973 for the OTP endpoint.
+   * Without this poll those messages sit at `sent` forever and are never
+   * billed, even the ones that did reach the handset.
+   *
+   * OTP-endpoint session ids (`msj…`) are not in this report's index — it
+   * answers `logStatus: Invalid` for them — which surfaces as `unknown` and
+   * leaves the webhook to do its job.
+   */
+  async getDeliveryStatus(providerMsgId: string): Promise<DlrResult> {
+    if (!providerMsgId) return { status: 'unknown' };
+
+    const url = `${this.baseUrl}/${this.apiKey}/ADDON_SERVICES/RPT/TSMS/${providerMsgId}`;
+    try {
+      const response = await axios.get(url, {
+        responseType: 'text',
+        transformResponse: [(body: unknown) => body],
+      });
+      return this.parseTsmsReport(String(response.data));
+    } catch (error: any) {
+      // A report we could not fetch is not a delivery failure. Returning
+      // `unknown` leaves the message in flight to be retried, rather than
+      // marking it failed on a network blip.
+      this.logger.warn(
+        `2Factor report lookup failed for ${providerMsgId}: ${error?.message}`,
+      );
+      return { status: 'unknown' };
+    }
+  }
+
+  /**
+   * The report is a single flat record with no attributes, namespaces or
+   * repeated tags, so it is read with a tag matcher rather than by taking on
+   * an XML parser. `fast-xml-parser` is present in the tree but only as a
+   * transitive dependency of the AWS SDK — depending on it directly would
+   * break the moment that transitive pin moves.
+   */
+  private parseTsmsReport(xml: string): DlrResult {
+    const tag = (name: string): string | null => {
+      const m = xml.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`));
+      return m ? m[1].trim() : null;
+    };
+
+    if ((tag('logStatus') ?? '').toLowerCase() !== 'valid') {
+      return {
+        status: 'unknown',
+        description: 'No transactional report for this session id',
+      };
+    }
+
+    const statusDesc = tag('statusDesc') ?? '';
+    const errorCode = normalizeErrorCode(tag('errorId'));
+
+    // The error code is the more specific signal, but 2Factor sends `000` on
+    // some non-delivered rows, so it only decides the outcome when it does not
+    // contradict an explicit terminal status name.
+    const byName = mapTwoFactorStatusName(statusDesc);
+    const byCode = TWO_FACTOR_ERROR_MAP[errorCode];
+
+    let status: DlrResult['status'] = byName;
+    let description = statusDesc || undefined;
+
+    if (byCode && !(byCode.outcome === 'delivered' && byName === 'failed')) {
+      status = byCode.outcome;
+      description = statusDesc || byCode.reason;
+    }
+
+    const deliveredAt = parseIstTimestamp(tag('deliveredAt'));
+    const credits = Number(tag('creditsCharged'));
+    const body = tag('messageBody');
+
+    return {
+      status,
+      description,
+      // A rejected or barred row still carries a deliveredAt. Recording it
+      // would make a failed message read as delivered in the history.
+      deliveredAt:
+        status === 'delivered' ? (deliveredAt ?? undefined) : undefined,
+      // Curated text only. `statusDesc` is 2Factor's vocabulary (REJECTD,
+      // FAILED(BARRED)) and naming it to a customer discloses the provider.
+      failureReason:
+        status === 'failed' ? customerFacingReason(errorCode) : undefined,
+      providerFailureReason:
+        status === 'failed' ? statusDesc || undefined : undefined,
+      senderId: tag('smsFrom') ?? undefined,
+      characterCount: body ? body.length : undefined,
+      smsCount: Number.isFinite(credits) && credits > 0 ? credits : undefined,
+      rawResponse: {
+        statusDesc,
+        errorId: tag('errorId'),
+        sentAt: tag('sentAt'),
+        deliveredAt: tag('deliveredAt'),
+        smsTo: tag('smsTo'),
+        creditsCharged: tag('creditsCharged'),
+      },
+    };
   }
 
   private extractOtp(content: string): string | null {

@@ -8,6 +8,7 @@ import {
   SendSmsResult,
   SmsProvider,
 } from './sms-provider.interface.js';
+import { GENERIC_FAILURE_REASON } from './providers/two-factor-status.js';
 
 @Injectable()
 export class SmsProviderFactory {
@@ -91,9 +92,17 @@ export class SmsProviderFactory {
         provider: 'none',
         providerMsgId: '',
         status: 'failed',
-        failureReason: 'No SMS providers available',
+        failureReason: GENERIC_FAILURE_REASON,
+        providerFailureReason: 'No SMS providers available',
       };
     }
+
+    // The reason the LAST provider gave, kept so the caller is told what the
+    // provider actually said. This used to be discarded in favour of the
+    // literal string "All SMS providers failed", which is how weeks of
+    // rejected sends came to have no recoverable cause anywhere — not in the
+    // message row, not in the logs.
+    let lastProviderReason: string | undefined;
 
     for (const provider of healthyProviders) {
       try {
@@ -107,8 +116,13 @@ export class SmsProviderFactory {
           return { ...result, provider: provider.name };
         }
 
-        this.logger.warn(`Provider ${provider.name} failed, trying next`);
+        lastProviderReason =
+          result.providerFailureReason ?? result.failureReason;
+        this.logger.warn(
+          `Provider ${provider.name} failed (${lastProviderReason ?? 'no reason given'}), trying next`,
+        );
       } catch (err: any) {
+        lastProviderReason = err?.message;
         this.logger.warn(
           `Provider ${provider.name} threw error: ${err.message}`,
         );
@@ -119,7 +133,11 @@ export class SmsProviderFactory {
       provider: healthyProviders[healthyProviders.length - 1].name,
       providerMsgId: '',
       status: 'failed',
-      failureReason: 'All SMS providers failed',
+      // Neutral for the customer; the provider's own words are kept beside it
+      // for admins and logs. Repeating provider wording here is what used to
+      // disclose which SMS vendor sits behind the platform.
+      failureReason: GENERIC_FAILURE_REASON,
+      providerFailureReason: lastProviderReason ?? 'All SMS providers failed',
     };
   }
 }

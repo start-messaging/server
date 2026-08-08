@@ -9,6 +9,10 @@ import { ApiKeysModule } from '../api-keys/api-keys.module.js';
 import { SmsProvidersModule } from '../sms-providers/sms-providers.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
 import { SmsWebhookProcessor } from './queues/sms-webhook.processor.js';
+import {
+  SMS_RECONCILE_QUEUE,
+  SmsReconcileProcessor,
+} from './queues/sms-reconcile.processor.js';
 
 @Module({
   imports: [
@@ -19,9 +23,12 @@ import { SmsWebhookProcessor } from './queues/sms-webhook.processor.js';
     BullModule.registerQueue({
       name: 'sms-webhook',
     }),
+    BullModule.registerQueue({
+      name: SMS_RECONCILE_QUEUE,
+    }),
   ],
   controllers: [MessagesController, DashboardController],
-  providers: [MessagesService, SmsWebhookProcessor],
+  providers: [MessagesService, SmsWebhookProcessor, SmsReconcileProcessor],
   exports: [MessagesService, BullModule],
 })
 export class MessagesModule {}

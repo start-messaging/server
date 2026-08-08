@@ -54,6 +54,16 @@ export default () => ({
       // with TWOFACTOR_SENDER_ID for a different 2Factor account.
       senderId: process.env.TWOFACTOR_SENDER_ID || 'STMSG',
     },
+    // Settles messages the provider never sent a webhook for. Every knob is
+    // an env override so the sweep can be slowed, widened or switched off
+    // without a deploy if it ever misbehaves against the provider's API.
+    reconcile: {
+      enabled: process.env.SMS_RECONCILE_ENABLED !== 'false',
+      intervalMinutes: Number(process.env.SMS_RECONCILE_INTERVAL_MINUTES ?? 5),
+      graceMinutes: Number(process.env.SMS_RECONCILE_GRACE_MINUTES ?? 10),
+      maxAgeHours: Number(process.env.SMS_RECONCILE_MAX_AGE_HOURS ?? 48),
+      batchSize: Number(process.env.SMS_RECONCILE_BATCH_SIZE ?? 50),
+    },
     console: {
       /** Log messages instead of sending them. Local development only. */
       enabled: process.env.SMS_CONSOLE_PROVIDER === 'true',

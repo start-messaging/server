@@ -3,6 +3,22 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { MessagesService } from '../messages.service.js';
 import { MessageStatus } from '../entities/message.entity.js';
+import {
+  BARRED_REASON,
+  GENERIC_FAILURE_REASON,
+  TWO_FACTOR_ERROR_MAP,
+  TwoFactorOutcome,
+  mapTwoFactorStatusName,
+  normalizeErrorCode,
+} from '../../sms-providers/providers/two-factor-status.js';
+
+/** The shared vocabulary speaks in outcomes; this queue stores MessageStatus. */
+const TO_MESSAGE_STATUS: Record<TwoFactorOutcome, MessageStatus> = {
+  delivered: MessageStatus.DELIVERED,
+  failed: MessageStatus.FAILED,
+  sent: MessageStatus.SENT,
+  unknown: MessageStatus.SENT,
+};
 
 @Processor('sms-webhook')
 export class SmsWebhookProcessor extends WorkerHost {
@@ -36,30 +52,28 @@ export class SmsWebhookProcessor extends WorkerHost {
 
     let mappedStatus: MessageStatus;
     let failureReason: string | null = null;
+    // 2Factor's own wording, kept for admins only.
+    const providerReason: string | null =
+      payload.StatusDescription || payload.StatusName || smsStatus || null;
 
     // 1. Check Error Code first (more specific)
-    const errorCode = this.normalizeErrorCode(payload.Error);
-    const errorMap = this.getTwoFactorErrorMap();
+    const errorCode = normalizeErrorCode(payload.Error);
+    const mapped = errorCode ? TWO_FACTOR_ERROR_MAP[errorCode] : undefined;
 
-    if (errorCode && errorMap[errorCode]) {
-      const mapped = errorMap[errorCode];
-      mappedStatus = mapped.status;
+    if (mapped) {
+      mappedStatus = TO_MESSAGE_STATUS[mapped.outcome];
       failureReason = mapped.reason;
     } else {
       // 2. Fallback to status name
-      mappedStatus = this.mapTwoFactorStatus(smsStatus);
+      mappedStatus = TO_MESSAGE_STATUS[mapTwoFactorStatusName(smsStatus)];
       if (mappedStatus === MessageStatus.FAILED) {
         const fullStatus =
           `${smsStatus} ${payload.StatusDescription || ''} ${payload.StatusName || ''}`.toUpperCase();
-        if (fullStatus.includes('BARRED')) {
-          failureReason =
-            'Message delivery failed due to message service barring on the recipient number. In many cases, this occurs when the recipient does not maintain sufficient balance, resulting in the suspension of incoming services on the number.';
-        } else {
-          failureReason =
-            payload.StatusDescription ||
-            payload.StatusName ||
-            'Message delivery failed';
-        }
+        // Only curated text reaches the customer. The provider's own strings
+        // (REJECTD, FAILED(BARRED), operator/DLT wording) name the provider.
+        failureReason = fullStatus.includes('BARRED')
+          ? BARRED_REASON
+          : GENERIC_FAILURE_REASON;
       }
     }
 
@@ -69,103 +83,14 @@ export class SmsWebhookProcessor extends WorkerHost {
         payload.StatusName ||
         (errorCode ? `Error ${errorCode}` : null),
       failureReason: failureReason || message.failureReason,
+      providerFailureReason:
+        mappedStatus === MessageStatus.FAILED
+          ? (providerReason ?? message.providerFailureReason)
+          : message.providerFailureReason,
       metadata: { ...message.metadata, webhook_payload: payload },
       deliveredAt: mappedStatus === MessageStatus.DELIVERED ? new Date() : null,
     });
 
     return { success: true };
-  }
-
-  private getTwoFactorErrorMap(): Record<
-    string,
-    { status: MessageStatus; reason: string }
-  > {
-    const barredMessage =
-      'Message delivery failed due to message service barring on the recipient number. In many cases, this occurs when the recipient does not maintain sufficient balance, resulting in the suspension of incoming services on the number.';
-
-    return {
-      '000': { status: MessageStatus.DELIVERED, reason: 'Delivered' },
-      '021': {
-        status: MessageStatus.FAILED,
-        reason:
-          'Facility not supported by network. This might be due to insufficient balance or message service facility being unavailable for this number.',
-      },
-      '013': {
-        status: MessageStatus.FAILED,
-        reason: barredMessage,
-      },
-      '011': {
-        status: MessageStatus.FAILED,
-        reason: barredMessage,
-      },
-      '151': {
-        status: MessageStatus.FAILED,
-        reason: barredMessage,
-      },
-      '154': {
-        status: MessageStatus.FAILED,
-        reason: barredMessage,
-      },
-      '109': {
-        status: MessageStatus.FAILED,
-        reason: 'Invalid or incorrectly formatted recipient number.',
-      },
-      '180': {
-        status: MessageStatus.FAILED,
-        reason:
-          'Destination telecom network was temporarily unreachable. Please retry after some time.',
-      },
-      '027': {
-        status: MessageStatus.FAILED,
-        reason:
-          'Recipient is unreachable (switched off or out of coverage area).',
-      },
-      '033': {
-        status: MessageStatus.FAILED,
-        reason:
-          "Message delivery failed as the recipient's network message queue is full.",
-      },
-      '088': {
-        status: MessageStatus.FAILED,
-        reason:
-          'Network timeout while fetching recipient details. Please retry.',
-      },
-      '032': {
-        status: MessageStatus.FAILED,
-        reason:
-          "Recipient's phone memory is full. Message could not be delivered.",
-      },
-      '005': {
-        status: MessageStatus.FAILED,
-        reason:
-          'Unidentified subscriber. The recipient number is not allocated or active.',
-      },
-      '1': {
-        status: MessageStatus.FAILED,
-        reason: 'General network failure or recipient did not answer.',
-      },
-    };
-  }
-
-  private mapTwoFactorStatus(status: string): MessageStatus {
-    const s = (status || '').toUpperCase();
-    if (s.includes('DELIVERED')) return MessageStatus.DELIVERED;
-    if (
-      s.includes('FAILED') ||
-      s.includes('REJECTED') ||
-      s.includes('UNDELIVERED') ||
-      s.includes('NO-ANSWER') ||
-      s.includes('ERROR')
-    )
-      return MessageStatus.FAILED;
-    if (s.includes('SENT') || s.includes('SUBMITTED'))
-      return MessageStatus.SENT;
-    return MessageStatus.SENT;
-  }
-
-  private normalizeErrorCode(error: unknown): string {
-    if (error === null || error === undefined || error === '') return '';
-    if (typeof error !== 'string' && typeof error !== 'number') return '';
-    return String(error).padStart(3, '0');
   }
 }

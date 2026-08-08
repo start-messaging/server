@@ -18,6 +18,17 @@ import { ChannelsService } from '../channels/channels.service.js';
 import { SendOtpDto } from './dto/send-otp.dto.js';
 import { ErrorCodes } from '../common/constants/error-codes.constant.js';
 import Redis from 'ioredis';
+import { GENERIC_FAILURE_REASON } from '../sms-providers/providers/two-factor-status.js';
+
+/**
+ * Masks digit runs before the rendered body is stored, so diagnosing a
+ * template does not mean keeping every live OTP in a second place in clear.
+ * Everything that matters for DLT matching — wording, spacing, stray variable
+ * content — survives untouched.
+ */
+function maskOtpDigits(content: string): string {
+  return content.replace(/\d{4,8}/g, (m) => '*'.repeat(m.length));
+}
 
 @Injectable()
 export class OtpService {
@@ -58,6 +69,7 @@ export class OtpService {
       body: smsContent,
       identifiers,
       multiVariable,
+      templateId,
     } = await this.renderOtpMessage(
       dto.templateId,
       dto.variables as Record<string, string>,
@@ -83,9 +95,10 @@ export class OtpService {
       });
 
       if (smsResult.status === 'failed') {
-        throw new Error(
-          smsResult.failureReason || 'SMS Provider rejected request',
-        );
+        // Carries only the customer-safe reason. The provider's own wording
+        // travels on smsResult.providerFailureReason and is persisted below
+        // for admins, never returned in the HTTP error.
+        throw new Error(smsResult.failureReason || GENERIC_FAILURE_REASON);
       }
 
       // 5. Create Message record using the provider's returned status (usually 'sent')
@@ -98,6 +111,8 @@ export class OtpService {
         providerMsgId: smsResult.providerMsgId || null,
         status: this.mapResultStatus(smsResult.status),
         costAmount: 0,
+        otpTemplateId: templateId,
+        renderedContent: maskOtpDigits(smsContent),
         metadata: { intendedCost: this.costPerOtp },
         senderId:
           smsResult.provider === 'fast2sms'
@@ -146,8 +161,11 @@ export class OtpService {
           providerMsgId: smsResult?.providerMsgId || null,
           status: MessageStatus.FAILED,
           costAmount: 0,
+          otpTemplateId: templateId,
+          renderedContent: maskOtpDigits(smsContent),
           metadata: { intendedCost: this.costPerOtp },
           failureReason: err.message,
+          providerFailureReason: smsResult?.providerFailureReason ?? null,
           sentAt: null,
           apiKeyId,
         });
@@ -171,15 +189,22 @@ export class OtpService {
     body: string;
     identifiers: Record<string, string>;
     multiVariable: boolean;
+    templateId: string | null;
   }> {
     let body: string | null = null;
     let identifiers: Record<string, string> = {};
+    // The template that was actually resolved, not the one that was asked
+    // for. A draft or deleted id falls through to the hardcoded body below,
+    // and recording the requested id would then claim a template whose text
+    // was never sent.
+    let resolvedTemplateId: string | null = null;
 
     if (templateId) {
       const template = await this.channelsService.findTemplateById(templateId);
       if (template) {
         body = template.body;
         identifiers = (template.metadata as Record<string, string>) || {};
+        resolvedTemplateId = template.id;
       }
     }
 
@@ -210,7 +235,7 @@ export class OtpService {
       body = body.replaceAll(`{{${key}}}`, val);
     }
 
-    return { body, identifiers, multiVariable };
+    return { body, identifiers, multiVariable, templateId: resolvedTemplateId };
   }
 
   private async checkMobileRateLimit(phoneNumber: string) {

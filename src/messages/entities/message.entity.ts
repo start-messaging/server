@@ -1,6 +1,7 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity.js';
 import { User } from '../../users/entities/user.entity.js';
+import { OtpTemplate } from '../../channels/entities/otp-template.entity.js';
 
 export enum MessageStatus {
   INITIATED = 'initiated',
@@ -29,6 +30,34 @@ export class Message extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   otpRequestId: string | null;
 
+  /**
+   * The template that actually produced this message — the resolved one, so a
+   * request naming a draft or missing template records NULL rather than
+   * claiming a template whose body was never used.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  otpTemplateId: string | null;
+
+  @ManyToOne(() => OtpTemplate, { nullable: true })
+  @JoinColumn({ name: 'otpTemplateId' })
+  otpTemplate: OtpTemplate | null;
+
+  /**
+   * The text handed to the provider, with digit runs masked. `content` stores
+   * a fixed placeholder, so this is the only record of what was actually sent
+   * — and DLT accepts or rejects on exactly this text.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  renderedContent: string | null;
+
+  /**
+   * The provider's own rejection wording. Deliberately absent from every
+   * customer projection: it names the provider. `failureReason` carries the
+   * neutral explanation shown to customers.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  providerFailureReason: string | null;
+
   @Column()
   phoneNumber: string;
 
@@ -41,7 +70,11 @@ export class Message extends BaseEntity {
   @Column({ type: 'varchar', nullable: true })
   providerMsgId: string | null;
 
-  @Column({ type: 'enum', enum: MessageStatus, default: MessageStatus.INITIATED })
+  @Column({
+    type: 'enum',
+    enum: MessageStatus,
+    default: MessageStatus.INITIATED,
+  })
   status: MessageStatus;
 
   @Column({ type: 'jsonb', default: [] })

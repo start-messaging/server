@@ -15,13 +15,20 @@ export interface SendSmsParams {
 export interface SendSmsResult {
   providerMsgId: string;
   status: 'queued' | 'sent' | 'failed';
+  /** Customer-safe. Never contains provider vocabulary or identity. */
   failureReason?: string;
+  /** The provider's own wording. Admin-only — never in a customer response. */
+  providerFailureReason?: string;
   errorType?: 'validation' | 'service';
 }
 
 export interface DlrResult {
   status: 'sent' | 'delivered' | 'failed' | 'unknown';
   description?: string;
+  /** Customer-facing explanation, set only when `status` is `failed`. */
+  failureReason?: string;
+  /** The provider's own wording. Admin-only — never in a customer response. */
+  providerFailureReason?: string;
   senderId?: string;
   smsLanguage?: string;
   characterCount?: number;
