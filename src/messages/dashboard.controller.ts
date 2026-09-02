@@ -5,6 +5,7 @@ import { ApiKeysService } from '../api-keys/api-keys.service.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { generateUsageGuide } from '../api-keys/usage-guide.helper.js';
 import { DashboardStatsQueryDto } from './dto/dashboard-stats-query.dto.js';
+import { DashboardTrendsQueryDto } from './dto/dashboard-trends-query.dto.js';
 
 @ApiTags('Dashboard')
 @ApiBearerAuth()
@@ -32,9 +33,11 @@ export class DashboardController {
   @ApiOperation({ summary: 'Get message trends for graphs' })
   async getTrends(
     @CurrentUser('id') userId: string,
-    @Query('days') days?: number,
+    @Query() query: DashboardTrendsQueryDto,
   ) {
-    return this.messagesService.getDashboardTrends(userId, days || 7);
+    // The DTO owns both the default and the range check; a bare `@Query('days')`
+    // let an absurd value through to a Date and then to Postgres as a 500.
+    return this.messagesService.getDashboardTrends(userId, query.days);
   }
 
   @Get('api-keys')

@@ -53,9 +53,21 @@ export class AffiliateSettingsService {
 
     if (!row) {
       this.logger.warn('affiliate_settings row missing — creating defaults');
-      row = await this.repo.save(
-        this.repo.create({ isSingleton: true, isEnabled: false }),
-      );
+      // Same race, same fix as LeadsSettingsService.row(): the accrual and
+      // payout schedulers call get() on their own timers while the panel is
+      // being used, so two callers can both find the row missing and both
+      // insert. save() made the loser throw on the unique index and take the
+      // whole affiliate module down with it — the opposite of the self-healing
+      // this branch exists for. The index stays the guarantee; DO NOTHING plus
+      // a re-read is how the code cooperates with it.
+      await this.repo
+        .createQueryBuilder()
+        .insert()
+        .into(AffiliateSettings)
+        .values({ isSingleton: true, isEnabled: false })
+        .orIgnore()
+        .execute();
+      row = await this.repo.findOneOrFail({ where: { isSingleton: true } });
     }
 
     const value = this.toResolved(row);

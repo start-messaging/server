@@ -23,6 +23,67 @@ import { AttributionService } from '../affiliate/services/attribution.service.js
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** SQLSTATE for unique_violation. */
+const UNIQUE_VIOLATION = '23505';
+
+/** The constraint that carries "one account per email address". */
+const EMAIL_UNIQUE_CONSTRAINT = 'UQ_users_email';
+
+/**
+ * True only when Postgres refused an insert because that email is taken.
+ *
+ * The constraint name is part of the test deliberately: UQ_users_googleId
+ * raises the same SQLSTATE, and answering "Email already registered" to a
+ * collision on a different column would send the caller looking in the wrong
+ * place. Anything else is rethrown and stays a 500, which is honest.
+ *
+ * Read off `driverError` (the pg error) with the copy TypeORM assigns onto
+ * QueryFailedError itself as the fallback, so this keeps working whichever of
+ * the two a future TypeORM keeps.
+ */
+function isEmailAlreadyTaken(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate =
+    (error as { driverError?: unknown }).driverError ?? (error as unknown);
+  if (!candidate || typeof candidate !== 'object') return false;
+  const { code, constraint } = candidate as {
+    code?: string;
+    constraint?: string;
+  };
+  return code === UNIQUE_VIOLATION && constraint === EMAIL_UNIQUE_CONSTRAINT;
+}
+
+/**
+ * What every login/register/refresh call answers with.
+ *
+ * `isNewUser` is present (and true) only when the call CREATED the account.
+ * The dashboard fires posthog.alias on first-ever sign-in to weld the
+ * pre-signup lead person to the new user person, and a Google sign-in that
+ * creates an account is otherwise indistinguishable from a login on the
+ * client — this flag is the only place the distinction exists.
+ */
+export interface AuthResponse {
+  accessToken: string;
+  refreshToken: string;
+  isNewUser?: boolean;
+  user: Pick<
+    User,
+    | 'id'
+    | 'email'
+    | 'firstName'
+    | 'lastName'
+    | 'role'
+    | 'mobileNumber'
+    | 'companyName'
+    | 'websiteUrl'
+    | 'hasCompletedOnboarding'
+    | 'isActive'
+    | 'country'
+    | 'kycStatus'
+    | 'mobileVerified'
+  >;
+}
+
 /** Referral context carried on a signup request, read from the cookie. */
 export interface SignupAttribution {
   referralCode: string | null;
@@ -31,11 +92,25 @@ export interface SignupAttribution {
   landingPath?: string;
 }
 
+/** What `googleAuth` actually reads off a verified Google id token. */
+interface GoogleIdentity {
+  sub: string;
+  email?: string;
+  /**
+   * Google asserts addresses it has not confirmed, and this claim is how it
+   * says so. It is not optional to read — see the check in googleAuth.
+   */
+  email_verified?: boolean;
+  given_name?: string;
+  family_name?: string;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly googleClient: OAuth2Client | null;
   private readonly bcryptRounds: number;
+  private readonly mockGoogleVerify: boolean;
 
   constructor(
     private readonly usersService: UsersService,
@@ -50,6 +125,46 @@ export class AuthService {
       : null;
     this.bcryptRounds =
       this.configService.get<number>('auth.bcryptRounds') ?? 10;
+    // Double lock, same posture as the console SMS provider but stricter:
+    // live verification needs Google's public keys and a real client id, so
+    // the signup/link paths were untestable end-to-end — the mock lets the
+    // e2e suite present `mock:<base64url JSON>` tokens instead. It must ALSO
+    // see NODE_ENV === 'test' because accepting unsigned identity assertions
+    // anywhere near production would be an account-takeover primitive: any
+    // email named in the payload becomes a session for that account.
+    this.mockGoogleVerify =
+      this.configService.get<boolean>('google.mockVerify') === true &&
+      this.configService.get<string>('NODE_ENV') === 'test';
+  }
+
+  /**
+   * The mock verifier behind GOOGLE_MOCK_VERIFY (see the constructor).
+   *
+   * Only `mock:<base64url-encoded JSON {sub, email, ...}>` is accepted; every
+   * other shape — including a REAL Google id token — is refused with the very
+   * same error a bad token gets from live verification, so no test can pass
+   * against the mock while quietly bypassing what production would check.
+   */
+  private decodeMockGoogleToken(idToken: string): GoogleIdentity {
+    const refusal = () => new UnauthorizedException('Invalid Google ID token');
+    if (!idToken.startsWith('mock:')) throw refusal();
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(idToken.slice('mock:'.length), 'base64url').toString(
+          'utf8',
+        ),
+      ) as GoogleIdentity;
+      if (
+        !parsed ||
+        typeof parsed.sub !== 'string' ||
+        parsed.sub.length === 0
+      ) {
+        throw new Error('mock google payload has no sub');
+      }
+      return parsed;
+    } catch {
+      throw refusal();
+    }
   }
 
   /**
@@ -105,17 +220,33 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(dto.password, this.bcryptRounds);
     const role = dto.role ?? UserRole.CUSTOMER;
 
-    const user = await this.usersService.create({
-      email: dto.email,
-      passwordHash,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      role,
-      mobileNumber: dto.mobileNumber ?? null,
-      companyName: dto.companyName ?? null,
-      websiteUrl: dto.websiteUrl ?? null,
-      country: dto.country ?? null,
-    });
+    // The check above is a SELECT and this is an INSERT, with nothing holding
+    // the gap — and the ~100ms bcrypt hash in between holds it wide open, so a
+    // double-clicked signup button really does get both requests past the
+    // check. UQ_users_email is what actually enforces one account per address;
+    // the loser used to reach the filter as a raw QueryFailedError and read to
+    // the user as "the site is broken" rather than "you already have an
+    // account". The pre-check stays because it answers the common case without
+    // an exception; this is the case it cannot see.
+    let user: User;
+    try {
+      user = await this.usersService.create({
+        email: dto.email,
+        passwordHash,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        role,
+        mobileNumber: dto.mobileNumber ?? null,
+        companyName: dto.companyName ?? null,
+        websiteUrl: dto.websiteUrl ?? null,
+        country: dto.country ?? null,
+      });
+    } catch (error) {
+      if (isEmailAlreadyTaken(error)) {
+        throw new ConflictException('Email already registered');
+      }
+      throw error;
+    }
 
     await this.walletService.credit(
       user.id,
@@ -165,18 +296,43 @@ export class AuthService {
       );
     }
 
-    const ticket = await this.googleClient
-      .verifyIdToken({
-        idToken: dto.idToken,
-        audience: this.configService.get<string>('google.clientId'),
-      })
-      .catch(() => {
-        throw new UnauthorizedException('Invalid Google ID token');
-      });
+    let payload: GoogleIdentity | undefined;
+    if (this.mockGoogleVerify) {
+      // Test-only (double-locked in the constructor). Everything downstream —
+      // lookup, linking, creation, attribution — is the real path.
+      payload = this.decodeMockGoogleToken(dto.idToken);
+    } else {
+      const ticket = await this.googleClient
+        .verifyIdToken({
+          idToken: dto.idToken,
+          audience: this.configService.get<string>('google.clientId'),
+        })
+        .catch(() => {
+          throw new UnauthorizedException('Invalid Google ID token');
+        });
+      payload = ticket.getPayload();
+    }
 
-    const payload = ticket.getPayload();
     if (!payload || !payload.email) {
       throw new UnauthorizedException('Invalid Google ID token');
+    }
+
+    // The same gate PartnerAuthService.googleAuth has carried since it was
+    // written (partner-auth.service.ts), and the customer door was missing it —
+    // which is the worse place to miss it, because these accounts hold the
+    // wallet, the API keys and the message history.
+    //
+    // Step 2 below links a Google identity onto an existing account matched on
+    // `email` alone. Google will assert an address it has not confirmed, so
+    // without this check a genuine, correctly-audienced token carrying
+    // email_verified: false for someone else's address was enough to weld an
+    // attacker's googleId onto that account and be handed a full session and a
+    // 7-day refresh cookie — a second permanent door that survives the victim
+    // changing their password.
+    if (!payload.email_verified) {
+      throw new UnauthorizedException(
+        'This Google account has no verified email address.',
+      );
     }
 
     const { sub: googleId, email, given_name, family_name } = payload;
@@ -230,7 +386,9 @@ export class AuthService {
     // customer and take over someone else's referral.
     await this.attribute(user, attribution);
 
-    return this.buildAuthResponse(user, ip);
+    // Set here at the return site, not inside buildAuthResponse: only this
+    // branch knows the account did not exist a moment ago.
+    return { ...(await this.buildAuthResponse(user, ip)), isNewUser: true };
   }
 
   async refreshTokens(userId: string, refreshToken: string, ip: string) {
@@ -301,7 +459,7 @@ export class AuthService {
     return { userId, token };
   }
 
-  async buildAuthResponse(user: User, ip: string) {
+  async buildAuthResponse(user: User, ip: string): Promise<AuthResponse> {
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 

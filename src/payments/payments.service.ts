@@ -199,9 +199,14 @@ export class PaymentsService {
     });
   }
 
-  async handleWebhook(gatewayName: string, body: any, signature: string) {
+  async handleWebhook(
+    gatewayName: string,
+    body: any,
+    signature: string,
+    rawBody?: Buffer,
+  ) {
     const gateway = this.gatewayFactory.get(gatewayName);
-    const result = await gateway.verifyWebhook(body, signature);
+    const result = await gateway.verifyWebhook(body, signature, rawBody);
 
     if (!result.valid) {
       this.logger.warn(`Invalid webhook from ${gatewayName}`);

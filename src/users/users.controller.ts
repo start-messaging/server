@@ -18,6 +18,16 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+// `multer` is pinned to an exact 2.0.2 in package.json, matching the exact
+// version @nestjs/platform-express pins, so npm keeps a single deduped copy.
+//
+// Two things were wrong before. It was declared nowhere at all — only
+// `@types/multer` was — so this runtime import in the KYC upload path worked
+// purely because Nest happened to depend on multer and npm hoisted it; the day
+// Nest changed that, the route would have died at boot in production.
+// And declaring it as `^2.0.2` was not enough either: npm then installed 2.3.0
+// alongside Nest's 2.0.2, so the storage engine built here came from a
+// different copy of the library than the FileInterceptor consuming it.
 import { memoryStorage } from 'multer';
 import { UsersService } from './users.service.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';

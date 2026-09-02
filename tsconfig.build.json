@@ -2,10 +2,9 @@
   "extends": "./tsconfig.json",
   "exclude": [
     "node_modules",
-    "test",
+    "tests",
     "dist",
     "**/*spec.ts",
-    "e2e",
     "playwright.config.ts"
   ]
 }
