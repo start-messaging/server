@@ -42,7 +42,22 @@ export const envValidationSchema = Joi.object({
         'PARTNER_JWT_SECRET must not be the same value as JWT_SECRET',
     }),
   PARTNER_JWT_EXPIRATION: Joi.string().default('1h'),
-  AFFILIATE_REFERRAL_BASE_URL: Joi.string().uri().optional(),
+  /**
+   * From here on, every genuinely-optional string carries `.allow('')` (or
+   * `.empty('')` where a default should take over). `.env.example` is meant to
+   * be COPYABLE — `cp .env.example .env` has to boot — and the template
+   * documents optional keys by listing them with no value. Joi rejects the
+   * empty string for `Joi.string()` by default, so every one of those blank
+   * lines was a boot failure naming a key the developer was never asked to
+   * fill in. An empty optional string means "not configured", which is how the
+   * readers in `configuration.ts` already treat it: they branch on truthiness
+   * (`origins: X ? ... : defaults`, `if (keyId && keySecret)`) or coerce with
+   * `?? ''`. Keys read through `??` instead — where '' would survive as a real
+   * value and defeat the fallback — use `.empty('')`, so a blank line leaves
+   * the variable genuinely unset. Anything REQUIRED stays required and SHOULD
+   * still fail when blank; the template ships placeholders for those.
+   */
+  AFFILIATE_REFERRAL_BASE_URL: Joi.string().uri().empty('').optional(),
   /**
    * Whether this process registers the accrual/payout timers. Declared so a
    * typo fails at boot: the reader used to be a raw
@@ -53,14 +68,14 @@ export const envValidationSchema = Joi.object({
   AFFILIATE_SCHEDULER_ENABLED: Joi.boolean().empty('').default(true),
 
   // CORS
-  CORS_ORIGINS: Joi.string().optional(),
+  CORS_ORIGINS: Joi.string().allow('').optional(),
 
   // Fast2SMS
 
   // Razorpay (optional)
-  RAZORPAY_KEY_ID: Joi.string().optional(),
-  RAZORPAY_KEY_SECRET: Joi.string().optional(),
-  RAZORPAY_WEBHOOK_SECRET: Joi.string().optional(),
+  RAZORPAY_KEY_ID: Joi.string().allow('').optional(),
+  RAZORPAY_KEY_SECRET: Joi.string().allow('').optional(),
+  RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('').optional(),
 
   /**
    * Test seam, same idiom as SMS_CONSOLE_PROVIDER: default off, and the
@@ -83,7 +98,7 @@ export const envValidationSchema = Joi.object({
   CONVENIENCE_FEE_GST_PERCENT: Joi.number().min(0).max(30).default(18),
 
   // Google OAuth
-  GOOGLE_CLIENT_ID: Joi.string().optional(),
+  GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
 
   /**
    * Test seam for Google sign-in, same idiom as SMS_CONSOLE_PROVIDER: default
@@ -97,15 +112,15 @@ export const envValidationSchema = Joi.object({
   GOOGLE_MOCK_VERIFY: Joi.boolean().default(false),
 
   // Cloudflare R2
-  R2_ACCOUNT_ID: Joi.string().optional(),
-  R2_ACCESS_KEY_ID: Joi.string().optional(),
-  R2_SECRET_ACCESS_KEY: Joi.string().optional(),
-  R2_BUCKET_NAME: Joi.string().optional(),
-  R2_PUBLIC_URL: Joi.string().optional(),
+  R2_ACCOUNT_ID: Joi.string().allow('').optional(),
+  R2_ACCESS_KEY_ID: Joi.string().allow('').optional(),
+  R2_SECRET_ACCESS_KEY: Joi.string().allow('').optional(),
+  R2_BUCKET_NAME: Joi.string().allow('').optional(),
+  R2_PUBLIC_URL: Joi.string().allow('').optional(),
   // Any S3-compatible endpoint (minio, localstack, a test fixture). Unset =
   // Cloudflare R2, derived from R2_ACCOUNT_ID as always. Not test-locked: it
   // is a generic storage knob, and without credentials it can do nothing.
-  R2_ENDPOINT: Joi.string().uri().optional(),
+  R2_ENDPOINT: Joi.string().uri().allow('').optional(),
 
   // OTP
 
@@ -114,7 +129,7 @@ export const envValidationSchema = Joi.object({
   // Postgres that has no TLS while still running as NODE_ENV=production.
   DATABASE_SSL: Joi.boolean().optional(),
 
-  REDIS_URL: Joi.string().optional(),
+  REDIS_URL: Joi.string().allow('').optional(),
   // Colons are the separator, so a prefix containing one would nest
   // unpredictably; letters, digits, dashes and underscores only.
   REDIS_KEY_PREFIX: Joi.string()
@@ -123,11 +138,14 @@ export const envValidationSchema = Joi.object({
     .default(''),
 
   // Mailgun
-  MAILGUN_API_KEY: Joi.string().optional(),
-  MAILGUN_DOMAIN: Joi.string().optional(),
-  MAILGUN_FROM_NAME: Joi.string().default(APP_NAME),
-  MAILGUN_FROM_EMAIL: Joi.string().optional(),
-  MAILGUN_REPLY_TO_EMAIL: Joi.string().email().optional(),
+  MAILGUN_API_KEY: Joi.string().allow('').optional(),
+  MAILGUN_DOMAIN: Joi.string().allow('').optional(),
+  // `.empty('')` rather than `.allow('')`: both readers fall back with `??`
+  // (`configuration.ts` and `email.service.ts`), which '' would survive,
+  // putting a blank From name on every message instead of APP_NAME.
+  MAILGUN_FROM_NAME: Joi.string().empty('').default(APP_NAME),
+  MAILGUN_FROM_EMAIL: Joi.string().allow('').optional(),
+  MAILGUN_REPLY_TO_EMAIL: Joi.string().email().allow('').optional(),
 
   // Onboarding reminders
   //
@@ -136,71 +154,6 @@ export const envValidationSchema = Joi.object({
   // of production data needs the default to be.
   ONBOARDING_REMINDERS_ENABLED: Joi.boolean().default(false),
   ONBOARDING_REMINDERS_DRY_RUN: Joi.boolean().default(false),
-
-  // Leads: NRD ingest + enrichment crawler. Both sweeps default off — they
-  // fetch external sites and write thousands of rows, so nothing may start
-  // crawling on boot. The ingest gate has no env var at all: it is operated
-  // from the admin panel (lead_pipeline_settings.ingestEnabled) and defaults
-  // to off in code, so there is nothing here to keep in step with it.
-  // Not Joi.string().uri(): the {dateBase64Zip}/{date} placeholders are not
-  // legal URI characters, so a uri() rule would reject every valid template.
-  LEADS_NRD_URL_TEMPLATE: Joi.string().default(
-    'https://www.whoisds.com/whois-database/newly-registered-domains/{dateBase64Zip}/nrd',
-  ),
-  // The curated lists (Indian/generic/blocked TLDs, keywords, India tokens)
-  // are not here: they are data, not deployment config, and live in
-  // src/leads/nrd/tld-lists.constant.ts where review and the filter's own
-  // spec can both see them.
-  // 200k (was 20k): with ingest-all on generic TLDs, ~100–150k keeps/day is
-  // the new normal. The cap is a poisoned-file backstop — the ingest
-  // priority-sorts before cutting, so a cut discards the low-value tail.
-  // Tier-0 liveness prober has no env vars: its gate is
-  // lead_pipeline_settings.livenessEnabled and its tuning is in
-  // src/leads/liveness/liveness-tuning.constant.ts.
-  // Enrichment knobs are DEFAULTS for the runtime lead_pipeline_settings
-  // row, which the panel edits and which wins wherever set.
-  LEADS_ENRICH_ENABLED: Joi.boolean().default(false),
-  // Leads claimed per drain slice; the drain loops until nothing claims.
-  LEADS_ENRICH_BATCH_PER_SWEEP: Joi.number().integer().min(1).default(500),
-  // Sites crawled at once inside the drain.
-  LEADS_ENRICH_CONCURRENCY: Joi.number().integer().min(1).max(20).default(4),
-  // Re-crawl window: crawled leads re-enter the drain after this many hours.
-  LEADS_ENRICH_RECRAWL_HOURS: Joi.number().integer().min(1).default(48),
-  // Test seam: fixtures replace the scheme+host, not the code.
-  LEADS_ENRICH_URL_TEMPLATE: Joi.string().default('https://{domain}'),
-  // The parking-NS list, the crawl timeouts, attempt counts, the per-run
-  // valve and the parked-recheck window are not env vars: they are in
-  // src/leads/enrichment/enrich-tuning.constant.ts.
-  // The headless-browser escalation tier. Off by default — a headless
-  // Chromium on the small production box would starve the API; it is meant
-  // for a laptop/VPS worker pointed at the same database and Redis.
-  LEADS_BROWSER_ENRICH_ENABLED: Joi.boolean().default(false),
-  // 'chrome' = the machine's installed Google Chrome (no download); '' = the
-  // playwright registry Chromium from `npx playwright install chromium`.
-  LEADS_BROWSER_CHANNEL: Joi.string().allow('').default('chrome'),
-  LEADS_BROWSER_EXECUTABLE_PATH: Joi.string().optional(),
-
-  // Cold outreach. A separate lookalike domain's SMTP inbox, never the
-  // product Mailgun — see the outreach namespace in configuration.ts.
-  OUTREACH_SMTP_HOST: Joi.string().optional(),
-  OUTREACH_SMTP_PORT: Joi.number().default(587),
-  OUTREACH_SMTP_USER: Joi.string().optional(),
-  OUTREACH_SMTP_PASS: Joi.string().optional(),
-  OUTREACH_SMTP_SECURE: Joi.boolean().default(false),
-  OUTREACH_FROM_NAME: Joi.string().default(APP_NAME),
-  OUTREACH_FROM_EMAIL: Joi.string().email().optional(),
-  OUTREACH_REPLY_TO: Joi.string().email().optional(),
-  OUTREACH_CONSOLE_PROVIDER: Joi.boolean().default(false),
-  OUTREACH_DAILY_CAP: Joi.number().integer().min(1).default(100),
-  OUTREACH_PUBLIC_BASE_URL: Joi.string()
-    .uri()
-    .default('https://api.startmessaging.com'),
-  OUTREACH_LINK_BASE_URL: Joi.string()
-    .uri()
-    .default('https://startmessaging.com'),
-  OUTREACH_POSTAL_ADDRESS: Joi.string().allow('').default(''),
-  // The click-redirect allowlist is not an env var — it is a security
-  // allowlist, and lives in src/leads/outreach/outreach.constant.ts.
 
   // Custom testing
   MOCK_SMS_SEND: Joi.boolean().default(false),
