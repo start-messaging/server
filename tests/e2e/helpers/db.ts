@@ -147,10 +147,6 @@ export async function flushRedis(): Promise<void> {
 
 /** Tables the suite owns, ordered so truncation never trips a foreign key. */
 const TABLES = [
-  'lead_outreach_events',
-  'lead_ingest_runs',
-  'leads',
-  'outreach_suppressions',
   'partner_commissions',
   'partner_payouts',
   'referral_clicks',
@@ -197,20 +193,6 @@ export async function resetDb(): Promise<void> {
            "accrualLookbackHours"  = 168,
            "lastAccrualAt"         = NULL,
            "updatedAt"             = now()
-     WHERE "isSingleton" = true
-  `);
-
-  // Same singleton treatment for the leads pipeline knobs: NULL = "use the
-  // env default", which is the shipped state a test must start from.
-  await c.query(`
-    UPDATE "lead_pipeline_settings"
-       SET "ingestEnabled"       = NULL,
-           "livenessEnabled"     = NULL,
-           "enrichEnabled"       = NULL,
-           "enrichBatchPerSweep" = NULL,
-           "enrichConcurrency"   = NULL,
-           "enrichRecrawlHours"  = NULL,
-           "updatedAt"           = now()
      WHERE "isSingleton" = true
   `);
 }
