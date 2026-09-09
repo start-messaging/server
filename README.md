@@ -47,15 +47,49 @@ $ npm run start:prod
 ## Run tests
 
 ```bash
-# unit tests
+# unit tests — jest, colocated as src/**/*.spec.ts
 $ npm run test
 
-# e2e tests
+# integration — jest, boots the real AppModule in-process (tests/integration)
 $ npm run test:e2e
+
+# API end-to-end — playwright, drives the built server over HTTP (tests/e2e)
+$ npm run test:e2e:api
 
 # test coverage
 $ npm run test:cov
 ```
+
+The API suite is the big one. It needs Postgres and Redis up, a `.env.e2e`
+pointing at a throwaway database, and a current build — it runs `dist/main.js`
+rather than `nest start`, so the suite exercises the same artefact a deploy
+would:
+
+```bash
+$ npm run build && npm run test:e2e:api
+```
+
+It refuses to start against a database whose name does not look like a test one,
+because every reset truncates.
+
+### Test layout
+
+```
+tests/
+  e2e/                 playwright, one directory per domain
+    helpers/           actors.ts (builders) and db.ts (truncation, direct SQL)
+    <domain>/
+      helpers.ts       fixtures and constants shared within that domain
+      <feature>.spec.ts
+  integration/         jest + supertest against an in-process AppModule
+```
+
+One spec file per feature area, named for the feature. Anything shared inside a
+domain goes in that domain's `helpers.ts`; anything shared across domains goes
+in `tests/e2e/helpers/`. Avoid catch-all `edge-cases` files — they are how this
+suite previously grew 2,000-line specs that nobody could navigate.
+The `leads/` specs boot a local HTTP fixture server on port 41100 (started in
+`beforeAll`, closed in `afterAll` — the serial suite shares that port).
 
 ## Deployment
 

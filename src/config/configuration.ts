@@ -1,4 +1,7 @@
+import { OTP_COST_INR } from '../otp/constants/otp.constant.js';
+
 import { DEFAULT_CONVENIENCE_FEE } from '../payments/convenience-fee.js';
+import { APP_NAME } from '../common/constants/app.constants.js';
 
 export default () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
@@ -22,7 +25,6 @@ export default () => ({
   jwt: {
     secret: process.env.JWT_SECRET,
     expiration: process.env.JWT_EXPIRATION ?? '15m',
-    refreshExpiration: process.env.JWT_REFRESH_EXPIRATION ?? '7d',
   },
   /**
    * Affiliate portal signing key. Kept distinct from `jwt.secret` so a
@@ -37,14 +39,15 @@ export default () => ({
     referralBaseUrl:
       process.env.AFFILIATE_REFERRAL_BASE_URL ??
       'https://app.startmessaging.com',
+    /**
+     * Whether this process registers the accrual/payout timers. Defaults on;
+     * the e2e suite turns it off so a background accrual cannot fire mid-test.
+     * Declared in Joi as a boolean, so a typo is caught rather than read as
+     * "on" the way the old raw `!== 'false'` did.
+     */
+    schedulerEnabled: process.env.AFFILIATE_SCHEDULER_ENABLED !== 'false',
   },
   sms: {
-    fast2sms: {
-      apiKey: process.env.FAST2SMS_API_KEY,
-      route: process.env.FAST2SMS_ROUTE ?? 'dlt',
-      senderId: process.env.FAST2SMS_SENDER_ID,
-      dltTemplateId: process.env.FAST2SMS_DLT_TEMPLATE_ID,
-    },
     twoFactor: {
       apiKey: process.env.TWOFACTOR_API_KEY,
       templateName: process.env.TWOFACTOR_TEMPLATE_NAME || 'OTP',
@@ -58,6 +61,9 @@ export default () => ({
     // an env override so the sweep can be slowed, widened or switched off
     // without a deploy if it ever misbehaves against the provider's API.
     reconcile: {
+      // Joi declares this a boolean defaulting true, so `FALSE`/`0`/`no`
+      // are coerced (or rejected) there rather than silently ignored here —
+      // the old `!== 'false'` treated every one of those as "on".
       enabled: process.env.SMS_RECONCILE_ENABLED !== 'false',
       intervalMinutes: Number(process.env.SMS_RECONCILE_INTERVAL_MINUTES ?? 5),
       graceMinutes: Number(process.env.SMS_RECONCILE_GRACE_MINUTES ?? 10),
@@ -69,10 +75,67 @@ export default () => ({
       enabled: process.env.SMS_CONSOLE_PROVIDER === 'true',
     },
   },
+  /**
+   * The "you haven't finished signing up" nudges.
+   *
+   * `enabled` defaults to false, unlike every other sweep in this file. The
+   * others move our own numbers; this one puts mail in a customer's inbox, and
+   * `.env` here points at the production database — so the default has to be
+   * the one where running the API locally cannot email live accounts.
+   */
+  onboardingReminders: {
+    enabled: process.env.ONBOARDING_REMINDERS_ENABLED === 'true',
+    /** Log who would be emailed, write the rows, send nothing. */
+    dryRun: process.env.ONBOARDING_REMINDERS_DRY_RUN === 'true',
+    // maxPerRun moved to src/onboarding/constants/onboarding-reminders.constant.ts
+  },
+  /**
+   * Cold-outreach transport and tracking. Deliberately NOT the Mailgun
+   * credentials above: cold mail on the product domain risks the account every
+   * password-reset depends on, so outreach points at a separate lookalike
+   * domain's SMTP inbox.
+   */
+  outreach: {
+    smtp: {
+      host: process.env.OUTREACH_SMTP_HOST,
+      port: Number(process.env.OUTREACH_SMTP_PORT ?? 587),
+      user: process.env.OUTREACH_SMTP_USER,
+      pass: process.env.OUTREACH_SMTP_PASS,
+      secure: process.env.OUTREACH_SMTP_SECURE === 'true',
+    },
+    fromName: process.env.OUTREACH_FROM_NAME ?? APP_NAME,
+    fromEmail: process.env.OUTREACH_FROM_EMAIL,
+    replyTo: process.env.OUTREACH_REPLY_TO,
+    /** Log instead of sending. Local/test only, same idiom as SMS_CONSOLE_PROVIDER. */
+    consoleProvider: process.env.OUTREACH_CONSOLE_PROVIDER === 'true',
+    /**
+     * Deliverability protection, not a business rule: a new outreach domain
+     * that suddenly sends hundreds a day gets junk-foldered, which burns the
+     * domain for good. Counted in Asia/Kolkata days.
+     */
+    dailyCap: Number(process.env.OUTREACH_DAILY_CAP ?? 100),
+    /** Where tracking pixel/click/unsubscribe URLs point — this API. */
+    publicBaseUrl:
+      process.env.OUTREACH_PUBLIC_BASE_URL ?? 'https://api.startmessaging.com',
+    /**
+     * The CTA target. Carries ?smref=<leadId> so PostHog on the marketing site
+     * attributes the visit to the lead.
+     */
+    linkBaseUrl:
+      process.env.OUTREACH_LINK_BASE_URL ?? 'https://startmessaging.com',
+    /**
+     * CAN-SPAM requires a physical postal address in the footer of commercial
+     * mail. Rendered only when set — an empty default keeps local sends from
+     * printing a placeholder as if it were an address.
+     */
+    postalAddress: process.env.OUTREACH_POSTAL_ADDRESS ?? '',
+    // clickHosts moved to src/leads/outreach/outreach.constant.ts — it is a
+    // security allowlist, not a setting.
+  },
   mailgun: {
     apiKey: process.env.MAILGUN_API_KEY,
     domain: process.env.MAILGUN_DOMAIN,
-    fromName: process.env.MAILGUN_FROM_NAME ?? 'StartMessaging',
+    fromName: process.env.MAILGUN_FROM_NAME ?? APP_NAME,
     fromEmail: process.env.MAILGUN_FROM_EMAIL,
     replyToEmail: process.env.MAILGUN_REPLY_TO_EMAIL,
   },
@@ -112,9 +175,22 @@ export default () => ({
           DEFAULT_CONVENIENCE_FEE.gstPercent,
       ),
     },
+    /**
+     * Test seam: replace ORDER CREATION with a local fake. The gateway
+     * factory additionally requires NODE_ENV === 'test' — a fake gateway
+     * reachable in production would mint top-ups for free.
+     */
+    fakeGateway: process.env.PAYMENTS_FAKE_GATEWAY === 'true',
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,
+    /**
+     * Test seam: accept `mock:<base64url JSON>` id tokens instead of calling
+     * Google. AuthService additionally requires NODE_ENV === 'test' — an
+     * unsigned identity assertion honoured anywhere near production is an
+     * account-takeover primitive.
+     */
+    mockVerify: process.env.GOOGLE_MOCK_VERIFY === 'true',
   },
   r2: {
     accountId: process.env.R2_ACCOUNT_ID,
@@ -122,6 +198,11 @@ export default () => ({
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     bucketName: process.env.R2_BUCKET_NAME,
     publicUrl: process.env.R2_PUBLIC_URL,
+    /**
+     * Any S3-compatible endpoint (minio, localstack, a test fixture). Unset =
+     * Cloudflare R2 derived from the account id, exactly as before.
+     */
+    endpoint: process.env.R2_ENDPOINT,
   },
   cors: {
     origins: process.env.CORS_ORIGINS
@@ -144,10 +225,7 @@ export default () => ({
           'http://localhost:5175',
         ],
   },
-  otp: {
-    expiryMinutes: parseInt(process.env.OTP_EXPIRY_MINUTES ?? '5', 10),
-    costPerOtp: parseFloat(process.env.OTP_COST ?? '0.25'),
-  },
+  // otp expiry and cost moved to src/otp/constants/otp.constant.ts
   currencies: {
     supported: ['INR'],
     default: 'INR',
@@ -155,7 +233,7 @@ export default () => ({
       INR: {
         gateway: 'razorpay',
         minTopUp: 1000,
-        otpCost: parseFloat(process.env.OTP_COST ?? '0.25'),
+        otpCost: OTP_COST_INR,
         locale: 'en-IN',
       },
     },

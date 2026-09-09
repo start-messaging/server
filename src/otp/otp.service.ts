@@ -6,8 +6,6 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-// import { InjectQueue } from '@nestjs/bullmq';
-// import { Queue } from 'bullmq';
 import { Repository } from 'typeorm';
 import { OtpRequest, OtpStatus } from './entities/otp-request.entity.js';
 import { WalletService } from '../wallet/wallet.service.js';
@@ -19,6 +17,8 @@ import { SendOtpDto } from './dto/send-otp.dto.js';
 import { ErrorCodes } from '../common/constants/error-codes.constant.js';
 import Redis from 'ioredis';
 import { GENERIC_FAILURE_REASON } from '../sms-providers/providers/two-factor-status.js';
+import { OTP_COST_INR, OTP_EXPIRY_MINUTES } from './constants/otp.constant.js';
+import { APP_NAME } from '../common/constants/app.constants.js';
 
 /**
  * Masks digit runs before the rendered body is stored, so diagnosing a
@@ -45,10 +45,9 @@ export class OtpService {
     private readonly channelsService: ChannelsService,
     private readonly config: ConfigService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis | null,
-    // @InjectQueue('sms-status') private readonly smsQueue: Queue,
   ) {
-    this.expiryMinutes = this.config.get<number>('otp.expiryMinutes') ?? 5;
-    this.costPerOtp = this.config.get<number>('otp.costPerOtp') ?? 0.25;
+    this.expiryMinutes = OTP_EXPIRY_MINUTES;
+    this.costPerOtp = OTP_COST_INR;
   }
 
   async send(userId: string, dto: SendOtpDto, apiKeyId?: string) {
@@ -121,20 +120,14 @@ export class OtpService {
         apiKeyId,
       });
 
-      // 6. Add to BullMQ for status polling ONLY if the provider is NOT 2factor
-      // 2factor is handled purely via incoming webhooks.
-      // if (smsResult.provider !== '2factor') {
-      //   await this.smsQueue.add(
-      //     'check-status',
-      //     { messageId: message.id },
-      //     {
-      //       delay: 10000,
-      //       attempts: 15,
-      //       backoff: { type: 'exponential', delay: 30000 },
-      //       removeOnComplete: true,
-      //     },
-      //   );
-      // }
+      // Settlement is not scheduled from here. A 2Factor OTP send is settled by
+      // its delivery webhook, and anything that never produces one — every
+      // transactional send — is picked up by the SMS reconcile sweep
+      // (messages/queues/sms-reconcile.processor.ts). The commented-out
+      // 'sms-status' queue that used to sit here belonged to a third,
+      // never-registered path whose worker marked a message FAILED after five
+      // minutes; that contradicts the sweep's 10-minute grace and 48-hour
+      // window, and the two would have fought over billing state.
 
       return {
         otpRequestId: otpRequest.id,
@@ -223,15 +216,42 @@ export class OtpService {
       body = 'Your verification code is {{otp}}. Valid for {{expiry}} minutes.';
     }
 
-    const appName = this.config.get<string>('app.name') ?? 'StartMessaging';
+    // A constant, not a lookup: `app.name` was never defined by any config
+    // path or env var, so this always resolved to the literal. It is also the
+    // one place a blank value would be actively harmful — the recipient would
+    // read "Code 123456 for ." — and a constant cannot arrive empty.
+    const appName = APP_NAME;
 
     const defaults: Record<string, string> = {
       expiry: String(this.expiryMinutes),
       appName,
     };
-    const merged = { ...defaults, ...variables };
+
+    // OtpVariablesDto declares `appName?` and `expiry?`, so a caller who omits
+    // them still hands the service an object carrying those keys with the value
+    // undefined. A plain `{ ...defaults, ...variables }` let that undefined win
+    // over the default, and every customer who did not pass `expiry` was texted
+    // "Valid for undefined minutes." — the highest-volume message this product
+    // sends. Only a key that actually carries a string may beat its default.
+    const supplied: Record<string, string> = {};
+    for (const [key, val] of Object.entries(variables ?? {})) {
+      if (typeof val === 'string') supplied[key] = val;
+    }
+    const merged: Record<string, string> = { ...defaults, ...supplied };
 
     for (const [key, val] of Object.entries(merged)) {
+      // Belt to the above: `variables` is typed Record<string, string> but is
+      // cast into this method from the DTO, so the type is a promise rather
+      // than a guarantee. Anything that is not a string can only render as
+      // "undefined", "null" or "[object Object]" in a customer's SMS, so it
+      // never reaches the body — the placeholder stays visible instead, which
+      // is at least diagnosable.
+      if (typeof val !== 'string') {
+        this.logger.warn(
+          `Skipped non-string OTP template variable {{${key}}} (${typeof val})`,
+        );
+        continue;
+      }
       body = body.replaceAll(`{{${key}}}`, val);
     }
 

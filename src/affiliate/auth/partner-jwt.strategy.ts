@@ -78,6 +78,17 @@ export class PartnerJwtStrategy extends PassportStrategy(
       throw new UnauthorizedException('Partner account is no longer active');
     }
 
-    return { id: payload.sub, email: payload.email };
+    // `role` is here for the log and telemetry layer, not for authorisation:
+    // LoggingInterceptor falls back to 'unauthenticated' when req.user carries
+    // no role, so every authenticated partner request was being recorded — in
+    // pino and in the PostHog/OTel attributes — as anonymous traffic while
+    // still carrying the partner's real id in user.id. That makes the whole
+    // affiliate portal invisible to any filter or funnel keyed on role, and
+    // makes a genuinely anonymous request indistinguishable from a partner one.
+    //
+    // It cannot widen access: partner routes are gated by PartnerAuthGuard, and
+    // RolesGuard only ever asks whether the role is one a @Roles() decorator
+    // named — 'admin' or 'customer' — which 'partner' is not.
+    return { id: payload.sub, email: payload.email, role: 'partner' };
   }
 }

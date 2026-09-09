@@ -1,16 +1,42 @@
+import { existsSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
 import { config as loadEnv } from 'dotenv';
+import { assertBuildIsCurrent } from './tests/e2e/global-setup';
 
-// The suite is deliberately pointed at its own database and its own Redis
-// logical DB. `sm_verify` holds a restore of production data; a test run
-// truncates freely, so the two must never be the same target.
-loadEnv({ path: '.env.e2e', override: true });
+// The suite is deliberately pointed at `sm_test` and its own Redis logical
+// DB. `sm_db` is the development database, holding real users, messages and
+// leads; a test run truncates freely, so the two must never be the same
+// target.
+//
+// `sm_test` is shared with the admin-panel and dashboard e2e suites, so those
+// runs cannot overlap with this one — run them one at a time.
+//
+// `.env.e2e` is gitignored, so it cannot be the only source: a fresh clone has
+// none, dotenv no-ops on a missing file, and the run then died deep in the db
+// helper complaining about a DATABASE_NAME of `undefined` instead of saying
+// there was no e2e config at all. `.env.ci` is the tracked, reviewable copy of
+// the same values, so it stands in when there is no local override.
+loadEnv({
+  path: existsSync('.env.e2e') ? '.env.e2e' : '.env.ci',
+  override: true,
+});
+
+// Before anything else, including the webServer: Playwright starts webServer
+// as a plugin task *ahead* of globalSetup, so a check that lives in globalSetup
+// would let a stale `dist` boot and only complain a minute later. The suite
+// runs the compiled output, so an un-rebuilt dist tests the previous commit and
+// passes while doing it.
+assertBuildIsCurrent();
 
 const PORT = process.env.PORT ?? '3010';
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
-  testDir: './e2e',
+  testDir: './tests/e2e',
+  // Clears leftover BullMQ jobs before the API boots — see the file for why
+  // that is safe here and not between tests.
+  globalSetup: './tests/e2e/global-setup.ts',
+  globalTeardown: './tests/e2e/global-teardown.ts',
   // Serial. Nearly every affiliate assertion is about global state — the
   // settings singleton, a partner's cached balance, the accrual watermark — so
   // parallel workers sharing one database would interfere by construction.

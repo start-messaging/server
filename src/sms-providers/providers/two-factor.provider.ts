@@ -16,6 +16,25 @@ import {
   parseIstTimestamp,
 } from './two-factor-status.js';
 
+/**
+ * Every call to 2Factor is bounded.
+ *
+ * axios defaults to no timeout at all, so a vendor that accepts the connection
+ * and then stops responding held the request until the OS gave up on the
+ * socket — minutes, not seconds. Two of these three calls are made from inside
+ * a customer's synchronous `POST /otp/send`, so that is a customer waiting, a
+ * Node handle pinned, and — on a 2 GB box that also runs other things — a way
+ * for one vendor incident to become an outage on our side of the boundary.
+ *
+ * The send is the tighter budget because someone is watching a form: past ten
+ * seconds the OTP has failed as far as they are concerned, and failing fast
+ * lets the caller retry against a provider that is answering. The report poll
+ * is a background sweep with nobody waiting, so it is allowed longer before it
+ * gives up and leaves the row for the next pass.
+ */
+const SEND_TIMEOUT_MS = 10_000;
+const REPORT_TIMEOUT_MS = 20_000;
+
 @Injectable()
 export class TwoFactorProvider implements SmsProvider {
   private readonly logger = new Logger(TwoFactorProvider.name);
@@ -71,7 +90,7 @@ export class TwoFactorProvider implements SmsProvider {
 
     try {
       this.logger.debug(`Sending 2Factor SMS to ${params.to}`);
-      const response = await axios.get(url);
+      const response = await axios.get(url, { timeout: SEND_TIMEOUT_MS });
 
       if (response.data.Status === 'Success') {
         return {
@@ -136,6 +155,7 @@ export class TwoFactorProvider implements SmsProvider {
       );
       const response = await axios.post(url, form.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: SEND_TIMEOUT_MS,
       });
 
       if (response.data.Status === 'Success') {
@@ -195,6 +215,7 @@ export class TwoFactorProvider implements SmsProvider {
       const response = await axios.get(url, {
         responseType: 'text',
         transformResponse: [(body: unknown) => body],
+        timeout: REPORT_TIMEOUT_MS,
       });
       return this.parseTsmsReport(String(response.data));
     } catch (error: any) {

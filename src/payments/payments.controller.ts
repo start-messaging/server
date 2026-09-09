@@ -1,4 +1,16 @@
-import { Body, Controller, Get, Headers, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
+// Type-only: a type used in a decorated signature must be imported this way
+// under isolatedModules + emitDecoratorMetadata, or tsc refuses it (TS1272).
+import type { RawBodyRequest } from '@nestjs/common';
+import type { Request } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { PaymentsService } from './payments.service.js';
@@ -49,9 +61,18 @@ export class PaymentsController {
   @SkipThrottle()
   @ApiOperation({ summary: 'Razorpay webhook endpoint' })
   razorpayWebhook(
+    @Req() req: RawBodyRequest<Request>,
     @Body() body: any,
     @Headers('x-razorpay-signature') signature: string,
   ) {
-    return this.paymentsService.handleWebhook('razorpay', body, signature);
+    // Both are passed on purpose: the signature is checked against `req.rawBody`
+    // (an HMAC is over bytes), while the parsed `body` is what the event fields
+    // are read from afterwards.
+    return this.paymentsService.handleWebhook(
+      'razorpay',
+      body,
+      signature,
+      req.rawBody,
+    );
   }
 }

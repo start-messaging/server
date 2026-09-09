@@ -60,10 +60,40 @@ function toPaise(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/**
+ * Rounds onto the storage grid: `payments.amount`, `.convenienceFee` and
+ * `.chargedAmount` are all numeric(12,4).
+ *
+ * This matters because `CHK_payments_charged_reconciles` is evaluated against
+ * the *stored* values, so arithmetic done at any finer granularity than the
+ * column can hold will not agree with what Postgres ends up comparing.
+ */
+function toStored(value: number): number {
+  return Math.round(value * 1e4) / 1e4;
+}
+
 export function calculateConvenienceFee(
-  amount: number,
+  rawAmount: number,
   config: ConvenienceFeeConfig,
 ): FeeBreakdown {
+  // Onto the storage grid first, before anything is derived from it.
+  //
+  // `amount` used to pass through untouched while the fee and the charge were
+  // each rounded to paise, so any amount finer than a paisa produced three
+  // numbers that did not add up: ₹1000.005 gave a ₹20.00 fee and a ₹1020.01
+  // charge, and 1000.005 + 20.00 ≠ 1020.01. `CHK_payments_charged_reconciles`
+  // then refused the insert — and createOrder() raises the Razorpay order
+  // *before* it saves the row, so the customer got a 500 while a live order sat
+  // at the gateway with nothing in our database pointing at it.
+  //
+  // Rounding here rather than rejecting sub-paise input is deliberate: the
+  // columns are numeric(12,4) on purpose and
+  // payments/checkout-verification.spec.ts pins that a top-up in fractions of a
+  // rupee is credited to the paisa, so the granularity is a feature. Every
+  // paise-granular amount — which is every amount the dashboard can produce —
+  // is unaffected by this line.
+  const amount = toStored(rawAmount);
+
   // A zero or negative rate is the only way to end up with no surcharge, and
   // it means somebody has configured one deliberately.
   if (config.percent <= 0) {
@@ -71,11 +101,15 @@ export function calculateConvenienceFee(
   }
 
   if (config.mode === 'simple') {
-    const convenienceFee = toPaise((amount * config.percent) / 100);
+    const chargedAmount = toPaise(amount + (amount * config.percent) / 100);
     return {
       amount,
-      convenienceFee,
-      chargedAmount: toPaise(amount + convenienceFee),
+      // By subtraction, for the same reason the gross-up branch below does it:
+      // the charge has to land on a whole paisa for the gateway, and the fee is
+      // then whatever makes the three numbers add up. Rounding the fee
+      // independently and adding it back is what broke the identity.
+      convenienceFee: toStored(chargedAmount - amount),
+      chargedAmount,
     };
   }
 
@@ -91,10 +125,11 @@ export function calculateConvenienceFee(
   const chargedAmount = toPaise(amount / (1 - rate));
 
   // Derived by subtraction rather than computed separately, so the three
-  // numbers always reconcile exactly no matter how the rounding fell.
+  // numbers always reconcile exactly no matter how the rounding fell — on the
+  // storage grid, which is the grid the CHECK constraint compares on.
   return {
     amount,
-    convenienceFee: toPaise(chargedAmount - amount),
+    convenienceFee: toStored(chargedAmount - amount),
     chargedAmount,
   };
 }

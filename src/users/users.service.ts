@@ -22,6 +22,7 @@ import {
   SortWhitelist,
 } from '../common/utils/pagination.util.js';
 import { USER_SEARCH_EXPRESSION } from './constants/user-search.constant.js';
+import { OTP_EXPIRY_MINUTES } from '../otp/constants/otp.constant.js';
 
 /** Sort keys the admin user list may order by. */
 const USER_SORT_WHITELIST: SortWhitelist = {
@@ -59,7 +60,7 @@ export class UsersService {
     private readonly config: ConfigService,
     private readonly emailService: EmailService,
   ) {
-    this.otpExpiryMinutes = this.config.get<number>('otp.expiryMinutes') ?? 5;
+    this.otpExpiryMinutes = OTP_EXPIRY_MINUTES;
     this.otpMaxAttempts = 3;
     this.otpCooldownSeconds = 60;
     this.otpMaxPerHour = 5;
@@ -112,17 +113,10 @@ export class UsersService {
   }
 
   async update(id: string, dto: UpdateUserDto): Promise<User> {
-    if (dto.mobileNumber) {
-      const existing = await this.usersRepository.findOne({
-        where: { mobileNumber: dto.mobileNumber, id: Not(id) },
-      });
-      if (existing) {
-        throw new BadRequestException(
-          'Mobile number is already associated with another account.',
-        );
-      }
-    }
-    await this.usersRepository.update(id, dto);
+    const current = await this.usersRepository.findOne({ where: { id } });
+    if (!current) throw new NotFoundException('User not found');
+
+    await this.usersRepository.update(id, { ...dto });
     return this.usersRepository.findOneOrFail({ where: { id } });
   }
 

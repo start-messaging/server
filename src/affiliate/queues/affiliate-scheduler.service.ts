@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { AFFILIATE_QUEUE, AffiliateJob } from './affiliate.processor.js';
@@ -16,6 +17,7 @@ export class AffiliateSchedulerService implements OnModuleInit {
   constructor(
     @InjectQueue(AFFILIATE_QUEUE) private readonly queue: Queue,
     private readonly settingsService: AffiliateSettingsService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -28,7 +30,9 @@ export class AffiliateSchedulerService implements OnModuleInit {
    * wants its workers on separate instances from its web tier.
    */
   private get schedulingEnabled(): boolean {
-    return process.env.AFFILIATE_SCHEDULER_ENABLED !== 'false';
+    // Through ConfigService, not process.env: Joi declares the variable so a
+    // typo is a boot failure instead of silently reading as "on".
+    return this.config.get<boolean>('affiliate.schedulerEnabled') !== false;
   }
 
   onModuleInit(): void {

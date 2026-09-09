@@ -18,9 +18,19 @@ export class R2UploadService {
     this.bucketName = this.configService.get<string>('r2.bucketName') ?? '';
     this.publicUrl = this.configService.get<string>('r2.publicUrl') ?? '';
 
+    // R2_ENDPOINT points this service at any S3-compatible endpoint — minio,
+    // localstack, or the e2e suite's local fixture server — instead of the
+    // Cloudflare endpoint derived from the account id. Path-style addressing
+    // goes with it: the default virtual-hosted style puts the bucket in the
+    // hostname, which cannot resolve for an IP-address endpoint. Not a
+    // test-locked seam — it is a generic storage knob, and without
+    // credentials it can do nothing — but production simply leaves it unset.
+    const endpoint = this.configService.get<string>('r2.endpoint');
+
     this.client = new S3Client({
       region: 'auto',
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      endpoint: endpoint || `https://${accountId}.r2.cloudflarestorage.com`,
+      ...(endpoint ? { forcePathStyle: true } : {}),
       credentials: {
         accessKeyId: this.configService.get<string>('r2.accessKeyId') ?? '',
         secretAccessKey:

@@ -27,9 +27,15 @@ export interface SignatureVerificationParams {
 export interface PaymentGateway {
   name: string;
   createOrder(params: CreateOrderParams): Promise<CreateOrderResult>;
+  /**
+   * `rawBody` is the exact bytes received. A gateway that signs the request
+   * body MUST verify against these and not against a re-serialization of
+   * `body`, which is passed only so field extraction stays convenient.
+   */
   verifyWebhook(
     body: any,
     signature: string,
+    rawBody?: Buffer,
   ): Promise<WebhookVerificationResult>;
   getPublicKey(): string;
   verifyPaymentSignature(params: SignatureVerificationParams): boolean;

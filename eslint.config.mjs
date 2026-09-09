@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['eslint.config.mjs'],
+    // Plain config files, not part of the TypeScript project the type-aware
+    // rules are built from — linting them only produces "not found by the
+    // project service".
+    ignores: ['eslint.config.mjs', 'tests/integration/jest-e2e.config.js'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

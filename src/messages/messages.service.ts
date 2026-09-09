@@ -142,6 +142,15 @@ export class MessagesService {
     extraFields?: Partial<Message>,
   ): Promise<Message> {
     // Reset cost for failed messages to reflect actual spend.
+    //
+    // Known disagreement, recorded rather than fixed here: a FAILED report
+    // that arrives after a delivery has already been billed zeroes this
+    // column while the debit stands and nothing is refunded, so the message
+    // row says the send was free and the ledger says otherwise — the ledger
+    // being the one that is right. The charge is restored below on any later
+    // DELIVERED, from the ledger entry itself. Deciding what a late failure
+    // should do with money already taken (refund it, or keep the cost on the
+    // row) is a product call, not a rename of this line.
     if (newStatus === MessageStatus.FAILED) {
       extraFields = { ...extraFields, costAmount: 0 };
     } else {
@@ -158,19 +167,36 @@ export class MessagesService {
     }
 
     let debited = false;
+    // Captured from the ledger entry so the low-balance alert can be told the
+    // real pair of figures — it is a band-crossing test, so it needs the
+    // before and the after, not the balance twice.
+    let balanceBefore = 0;
+    let balanceAfter = 0;
     const updated = await this.dataSource.transaction(async (manager) => {
-      // Deferred Debit: only debit on first transition to DELIVERED
-      if (
-        newStatus === MessageStatus.DELIVERED &&
-        message.status !== MessageStatus.DELIVERED
-      ) {
+      // Deferred debit: a delivered message is billed, and billed once.
+      //
+      // The guard used to be `message.status !== DELIVERED`, read from an
+      // entity loaded outside this transaction, and that guard answered the
+      // wrong question. Two status checks arriving together both saw a
+      // non-delivered status and both charged — the wallet lock serialised
+      // them but had nothing to merge them on. And 2Factor sends several
+      // reports per message, so delivered → failed → delivered walked through
+      // it twice for one SMS: the failed step zeroes costAmount without
+      // refunding, and the second delivered then fell back to
+      // metadata.intendedCost and charged again.
+      //
+      // So the decision is no longer taken here at all. We say what the send
+      // was meant to cost and which message it is for; the wallet books it at
+      // most once against that reference, inside this transaction, and tells
+      // us whether money actually moved.
+      if (newStatus === MessageStatus.DELIVERED) {
         const debitAmount =
           message.costAmount > 0
             ? Number(message.costAmount)
             : Number(message.metadata?.intendedCost || 0);
 
         if (debitAmount > 0) {
-          await this.walletService.debit(
+          const outcome = await this.walletService.debitForReference(
             message.userId,
             debitAmount,
             `OTP delivered to ${message.phoneNumber}`,
@@ -178,16 +204,29 @@ export class MessagesService {
             message.id,
             manager,
           );
-          debited = true;
-          // Set costAmount now so it shows in dashboard
-          extraFields = { ...extraFields, costAmount: debitAmount };
+          debited = outcome.charged;
+          balanceBefore = Number(outcome.transaction.balanceBefore);
+          balanceAfter = Number(outcome.transaction.balanceAfter);
+          // Copied from the ledger entry rather than from what we asked for,
+          // and copied whether or not this is the charge that moved money: a
+          // message re-delivered after a failure zeroed this column gets the
+          // figure that was really taken put back, instead of showing a
+          // delivered send that cost nothing.
+          extraFields = {
+            ...extraFields,
+            costAmount: Number(outcome.transaction.amount),
+          };
         }
       }
 
       return this.updateStatus(message.id, newStatus, extraFields, manager);
     });
     if (debited) {
-      await this.walletService.notifyLowBalanceIfNeeded(message.userId);
+      await this.walletService.notifyLowBalanceIfNeeded(
+        message.userId,
+        balanceBefore,
+        balanceAfter,
+      );
     }
     return updated;
   }

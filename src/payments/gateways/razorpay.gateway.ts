@@ -84,12 +84,40 @@ export class RazorpayGateway implements PaymentGateway {
   async verifyWebhook(
     body: any,
     signature: string,
+    rawBody?: Buffer,
   ): Promise<WebhookVerificationResult> {
     const secret = this.config.get<string>('payments.razorpay.webhookSecret');
     if (!secret) return { valid: false };
 
+    // Over the bytes Razorpay actually sent, never over JSON.stringify(body).
+    //
+    // The round trip through the body parser and back out is not the identity:
+    // it renormalises unicode escapes, and it reorders any object whose keys
+    // look like integers — `notes` is free-form and customer-controlled, so
+    // that is reachable. Every such payload produced a signature mismatch on a
+    // genuine, correctly-signed webhook.
+    //
+    // What made that expensive rather than merely wrong is what happens next:
+    // handleWebhook answers an invalid webhook with HTTP 201 {received:false},
+    // Razorpay reads any 2xx as delivered and never retries, and there is no
+    // payment reconciliation sweep anywhere in the codebase. So a captured
+    // payment whose customer also never completed the browser callback — a
+    // closed tab on the success redirect is enough — was money taken and never
+    // credited, with nothing left to notice it.
+    //
+    // Absent bytes fail closed rather than falling back to the old behaviour:
+    // a body parser change that stopped populating rawBody must break loudly
+    // here, not silently reopen this.
+    if (!rawBody) {
+      this.logger.error(
+        'Razorpay webhook arrived without a raw body — cannot verify the ' +
+          'signature. Check that NestFactory.create is still passing rawBody.',
+      );
+      return { valid: false };
+    }
+
     const expectedSignature = createHmac('sha256', secret)
-      .update(JSON.stringify(body))
+      .update(rawBody)
       .digest('hex');
 
     if (!this.safeCompare(expectedSignature, signature)) {

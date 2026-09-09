@@ -74,7 +74,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, user } =
+    const { accessToken, refreshToken, user, isNewUser } =
       await this.authService.googleAuth(
         dto,
         req.ip ?? 'unknown',
@@ -87,7 +87,9 @@ export class AuthController {
       this.authService.getRefreshCookieOptions(),
     );
 
-    return { accessToken, user };
+    // Passed through only when the call created the account — the dashboard
+    // needs it to fire posthog.alias exactly once, on first-ever sign-in.
+    return { accessToken, user, ...(isNewUser ? { isNewUser } : {}) };
   }
 
   @Post('login')

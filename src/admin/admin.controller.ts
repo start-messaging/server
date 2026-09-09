@@ -42,6 +42,28 @@ import { UpdateTemplateDto } from './dto/update-template.dto.js';
 import { TemplateFilterQueryDto } from './dto/template-filter-query.dto.js';
 import { KycStatus } from '../users/enums/kyc-status.enum.js';
 
+/**
+ * True only for "this user_tags row points at a user that is not there".
+ *
+ * Matched on the constraint name rather than on 23503 alone: the same SQLSTATE
+ * covers the tagId side of the table, and a tag deleted mid-request is not a
+ * missing account and must not be reported as one.
+ */
+function isMissingUserLink(error: unknown): boolean {
+  // TypeORM copies the driver's fields onto QueryFailedError and keeps the
+  // original under `driverError`; a raw pg error carries them directly. Both
+  // spellings are read so the check does not depend on which layer threw.
+  const candidate = error as {
+    code?: string;
+    constraint?: string;
+    driverError?: { code?: string; constraint?: string };
+  } | null;
+  const code = candidate?.driverError?.code ?? candidate?.code;
+  const constraint =
+    candidate?.driverError?.constraint ?? candidate?.constraint;
+  return code === '23503' && constraint === 'FK_user_tags_userId';
+}
+
 @ApiTags('Admin')
 @ApiBearerAuth()
 @Roles('admin')
@@ -418,7 +440,41 @@ export class AdminController {
     @Body() dto: SetUserTagsDto,
     @CurrentUser('id') adminUserId: string,
   ) {
-    return this.tagsService.setUserTags(userId, dto.tagIds, adminUserId);
+    // The account used to be taken on trust: a well-formed uuid nobody owns
+    // went straight into an INSERT on user_tags, whose "userId" is a foreign
+    // key to users, so Postgres raised 23503 and the QueryFailedError — not an
+    // HttpException — left AllExceptionsFilter answering 500. A missing
+    // account owes a 404.
+    //
+    // The lookup is skipped for an empty set on purpose. Clearing is a DELETE
+    // with no row to violate anything, it has always been answered 200 for any
+    // well-formed uuid, and "a malformed user id is refused, and an empty set
+    // is a no-op for anyone" pins that. Paying for a SELECT on users to turn a
+    // harmless no-op into a 404 would break that test for no gain; if the two
+    // spellings should ever agree, that is a deliberate change to make with
+    // the pinned test rewritten alongside it.
+    if (dto.tagIds.length > 0) {
+      const user = await this.usersService.findById(userId);
+      if (!user) {
+        throw new NotFoundException(`No user found with id ${userId}`);
+      }
+    }
+
+    try {
+      return await this.tagsService.setUserTags(
+        userId,
+        dto.tagIds,
+        adminUserId,
+      );
+    } catch (error) {
+      // The lookup above is a check, not a lock. An account deleted between it
+      // and the insert lands here as the very 23503 the check exists to avoid,
+      // and it is still a missing account rather than a broken server.
+      if (isMissingUserLink(error)) {
+        throw new NotFoundException(`No user found with id ${userId}`);
+      }
+      throw error;
+    }
   }
 
   @Get('users/:userId/transactions')
