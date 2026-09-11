@@ -81,6 +81,60 @@ function leadingCapital(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/** One reminder variant's wording, with no recipient's name in it. */
+export interface OnboardingReminderCopy {
+  stage: OnboardingReminderStage;
+  blockedStep: OnboardingBlockedStep;
+  /** The subject line as it lands in the inbox. */
+  subject: string;
+  /** The heading, minus the "Hi <name>, " the send prepends. */
+  headline: string;
+  /** The one thing we are asking the customer to do. */
+  ask: string;
+  /** Why we are asking, as the mail puts it. */
+  why: string;
+}
+
+/**
+ * What one reminder actually says.
+ *
+ * Exported so the admin growth screen can name the copy behind a send instead
+ * of inventing a description of it. `sendOnboardingReminderEmail` builds its
+ * subject and heading from this same function, so the two cannot drift — the
+ * failure this closes is an ops screen confidently captioning a row with
+ * wording no customer ever received.
+ */
+export function describeOnboardingReminder(
+  stage: OnboardingReminderStage,
+  blockedStep: OnboardingBlockedStep,
+): OnboardingReminderCopy {
+  const isFinal = stage === OnboardingReminderStage.DAY_7;
+  const action = ONBOARDING_STEP_COPY[blockedStep];
+
+  return {
+    stage,
+    blockedStep,
+    subject: isFinal
+      ? `Still want to go live? ${leadingCapital(action.pending)}`
+      : action.subject,
+    // "One step left" is true on day two and grating on day seven, where the
+    // reader has already had a week of it. The final note leads with the state
+    // of the account instead.
+    headline: isFinal ? action.pending : action.title,
+    ask: action.what,
+    why: action.why,
+  };
+}
+
+/** Every reminder variant we are capable of sending, for ops screens. */
+export function onboardingReminderCatalogue(): OnboardingReminderCopy[] {
+  const stages = Object.values(OnboardingReminderStage);
+  const steps = Object.values(OnboardingBlockedStep);
+  return stages.flatMap((stage) =>
+    steps.map((step) => describeOnboardingReminder(stage, step)),
+  );
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -249,25 +303,20 @@ export class EmailService {
     step: OnboardingBlockedStep,
   ) {
     const isFinal = stage === OnboardingReminderStage.DAY_7;
-    const action = ONBOARDING_STEP_COPY[step];
+    const copy = describeOnboardingReminder(stage, step);
 
-    const subject = isFinal
-      ? `Still want to go live? ${leadingCapital(action.pending)}`
-      : action.subject;
+    const subject = copy.subject;
 
     const html = this.wrapEmail({
-      // "One step left" is true on day two and grating on day seven, where the
-      // reader has already had a week of it. The final note leads with the
-      // state of the account instead.
-      title: `Hi ${displayName}, ${isFinal ? action.pending : action.title}`,
+      title: `Hi ${displayName}, ${copy.headline}`,
       body: `
         <p>${
           isFinal
             ? 'Your StartMessaging account has been open for a week, but it still is not ready to send.'
             : 'Thanks for signing up to StartMessaging. Your account is almost ready.'
         }</p>
-        <p><strong>${action.what}</strong></p>
-        <p>${action.why}</p>
+        <p><strong>${copy.ask}</strong></p>
+        <p>${copy.why}</p>
         ${
           isFinal
             ? '<p style="color:#6b7280;">This is the last reminder we will send about this. Your account stays open either way — pick it up whenever you are ready.</p>'

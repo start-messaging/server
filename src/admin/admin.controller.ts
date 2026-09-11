@@ -40,6 +40,9 @@ import { DailyUsageQueryDto } from './dto/daily-usage-query.dto.js';
 import { CreateTemplateDto } from './dto/create-template.dto.js';
 import { UpdateTemplateDto } from './dto/update-template.dto.js';
 import { TemplateFilterQueryDto } from './dto/template-filter-query.dto.js';
+import { GrowthQueryDto } from './dto/growth-query.dto.js';
+import { GrowthNotesQueryDto } from './dto/growth-notes-query.dto.js';
+import { GrowthService } from './growth.service.js';
 import { KycStatus } from '../users/enums/kyc-status.enum.js';
 
 /**
@@ -78,6 +81,7 @@ export class AdminController {
     private readonly apiKeysService: ApiKeysService,
     private readonly paymentsService: PaymentsService,
     private readonly tagsService: TagsService,
+    private readonly growthService: GrowthService,
   ) {}
 
   // User management
@@ -275,6 +279,38 @@ export class AdminController {
     }));
 
     return paginatedResponse(enriched, total, query.page, query.limit);
+  }
+
+  // Growth oversight — signups, verification funnel, calling, reminder email.
+  //
+  // One call answers all four questions on purpose. They are read together and
+  // compared against each other ("192 of 392 called" only means something
+  // beside "392 signed up"), and four round trips would let the panel render
+  // four figures computed from four slightly different instants.
+  @Get('growth')
+  @ApiOperation({
+    summary:
+      'Signup graph, verification funnel, calling coverage and reminder email',
+    description:
+      'Scoped to role=customer throughout. Every rate is an envelope of ' +
+      '{ value, numerator, denominator, sufficient, reason } whose value is null — ' +
+      'never 0 — when the denominator is 0, because "0% called" and "nobody signed ' +
+      'up" are different facts an operator acts on differently.',
+  })
+  async getGrowth(@Query() query: GrowthQueryDto) {
+    return this.growthService.getGrowth(query);
+  }
+
+  @Get('growth/notes')
+  @ApiOperation({
+    summary: 'What the calling team wrote, most recently called first',
+    description:
+      'Lists every account the calling team has touched — a logged call OR a ' +
+      'note. Pass hasNote=false for the called-but-never-written-up worklist.',
+  })
+  async getGrowthNotes(@Query() query: GrowthNotesQueryDto) {
+    const { rows, total } = await this.growthService.getNotes(query);
+    return paginatedResponse(rows, total, query.page, query.limit);
   }
 
   // Customer detail
