@@ -1,0 +1,304 @@
+name: Deploy production
+
+# Production is deploy-on-demand, never deploy-on-push.
+#
+# `main` is an ordinary working branch here — commits land on it for review long
+# before anyone intends them to serve live traffic — so a push trigger would turn
+# every merge into a restart of the API that bills customers per message. The
+# deploy is therefore an explicit act, and `ref` makes this same workflow the
+# rollback: dispatch it against the SHA it replaced and the box goes back.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to release. Use a previous SHA to roll back.'
+        required: true
+        default: 'main'
+      confirm:
+        description: 'Type "deploy" to confirm this touches PRODUCTION.'
+        required: true
+        default: ''
+      reason:
+        description: 'Why (shown in the run summary and the on-box release log).'
+        required: false
+        default: ''
+
+# Never two production deploys at once: the second would build into the same
+# directory while the first is still reading it. Deliberately not
+# cancel-in-progress — a half-finished deploy that gets killed leaves the API
+# down, which is strictly worse than a queued one.
+concurrency:
+  group: deploy-production-server
+  cancel-in-progress: false
+
+# Every one of these is user-controlled dispatch input, so it reaches the shell
+# through `env:` and is read as "$VAR". GitHub substitutes `${{ }}` into a `run:`
+# body before bash ever parses it, which makes inline interpolation of an input a
+# shell-injection seam — the same reason ci.yml passes refs this way.
+env:
+  INPUT_REF: ${{ inputs.ref }}
+  INPUT_CONFIRM: ${{ inputs.confirm }}
+  INPUT_REASON: ${{ inputs.reason }}
+
+jobs:
+  # A typo'd confirmation should cost nothing, so it is checked before the test
+  # suite spends five minutes earning a deploy that was never going to happen.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      ref: ${{ steps.check.outputs.ref }}
+    steps:
+      - name: Refuse anything but an explicit confirmation, and a sane ref
+        id: check
+        run: |
+          set -euo pipefail
+
+          if [ "$INPUT_CONFIRM" != "deploy" ]; then
+            echo '::error::confirm must be exactly "deploy". Nothing was touched.'
+            exit 1
+          fi
+
+          # Validated against a charset rather than escaped, because this value is
+          # later forwarded into a remote shell. A ref cannot legally contain a
+          # quote, a space or a semicolon, so refusing them here means the
+          # forwarding below needs no quoting cleverness to stay safe.
+          if ! printf '%s' "$INPUT_REF" | grep -Eq '^[A-Za-z0-9._/-]{1,200}$'; then
+            echo '::error::ref may contain only letters, digits, dot, underscore, slash and dash.'
+            exit 1
+          fi
+
+          echo "ref=$INPUT_REF" >> "$GITHUB_OUTPUT"
+          echo "Releasing '$INPUT_REF' to PRODUCTION. Reason: ${INPUT_REASON:-(none given)}"
+
+  # The same suite staging gates on. Not a lighter variant, on purpose: the point
+  # of sharing it is that production cannot be held to a weaker bar than staging.
+  test:
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  checkpoint:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    outputs:
+      snapshot: ${{ steps.snap.outputs.snapshot_id }}
+    steps:
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # An RDS snapshot rather than a pg_dump, and the choice is not stylistic. A
+      # dump taken on the box depends on the client version matching the server's:
+      # pg_dump 16.15 against a 17.9 instance has already produced a 4 KB file
+      # here that looked like a backup and contained nothing. A snapshot is taken
+      # by RDS itself, so there is no client version to mismatch.
+      - name: Snapshot the production database
+        id: snap
+        run: |
+          set -euo pipefail
+          SNAP="sm-prod-predeploy-${{ github.run_number }}-$(echo '${{ github.sha }}' | cut -c1-7)"
+          echo "snapshot_id=$SNAP" >> "$GITHUB_OUTPUT"
+
+          aws rds create-db-snapshot \
+            --db-instance-identifier "${{ secrets.PRODUCTION_RDS_INSTANCE_ID }}" \
+            --db-snapshot-identifier "$SNAP" \
+            --tags Key=createdBy,Value=github-actions Key=run,Value=${{ github.run_id }} \
+            >/dev/null
+
+          echo "Waiting for $SNAP to become available…"
+          # Waited for, not fired and forgotten. A checkpoint whose creation was
+          # never confirmed is indistinguishable from no checkpoint at exactly the
+          # moment it turns out to matter.
+          aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
+
+          {
+            echo "### Pre-deploy snapshot"
+            echo "\`$SNAP\` — restore from this if the release has to be undone."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: [guard, checkpoint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    outputs:
+      previous: ${{ steps.release.outputs.previous_sha }}
+      migrated: ${{ steps.release.outputs.migrated }}
+    steps:
+      - name: Open an SSH session to the production host
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.PRODUCTION_SSH_KEY }}" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "${{ secrets.PRODUCTION_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # One script, run remotely, so the release is a single unit that either
+      # finishes or leaves the previous one running.
+      #
+      # REF is forwarded by assigning it ahead of the remote `bash`, because ssh
+      # does not carry the runner's environment across and a quoted heredoc is not
+      # expanded locally — so a bare ${REF} inside the script would simply be
+      # empty on the far side. It is safe unquoted-adjacent here only because the
+      # guard job already refused every character that could end the assignment.
+      - name: Build and release
+        id: release
+        run: |
+          set -euo pipefail
+          REF='${{ needs.guard.outputs.ref }}'
+
+          ssh -i ~/.ssh/deploy.pem \
+            "${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}" \
+            "REF='$REF' bash -se" <<'REMOTE' | tee release.out
+          set -euo pipefail
+          cd ~/server
+
+          PREV=$(git rev-parse HEAD)
+          echo "PREVIOUS_SHA=$PREV"
+
+          git fetch --quiet origin
+          # Detached on purpose: a release is a point in history, not a branch to
+          # drift on, and it is what lets the same workflow check out a bare SHA
+          # when rolling back.
+          git checkout --quiet --detach "origin/$REF" 2>/dev/null \
+            || git checkout --quiet --detach "$REF"
+          echo "RELEASED_SHA=$(git rev-parse HEAD)"
+
+          # The box has 2 GB of RAM and runs staging alongside this, so the build
+          # is capped rather than left to grow into the staging process's memory.
+          export NODE_OPTIONS=--max-old-space-size=640
+
+          # Only reinstall when the lockfile actually changed. `npm ci` deletes
+          # node_modules before repopulating it, and the running process
+          # lazy-requires modules mid-request — so an unconditional ci means
+          # "Cannot find module" and 502s for the length of the install. On
+          # production that window is not acceptable, so it is taken only when
+          # dependencies genuinely moved.
+          if ! git diff --quiet "$PREV" HEAD -- package-lock.json; then
+            echo "lockfile changed — reinstalling dependencies"
+            npm ci --no-audit --no-fund
+          else
+            echo "dependencies unchanged — skipping install"
+          fi
+
+          npm run build
+
+          # Whether this release changes the schema decides whether it can be
+          # undone by code alone, so it is measured before anything is applied.
+          # migration:show marks a pending migration with "[ ]".
+          #
+          # Fails SAFE: if the count cannot be taken, the release is treated as
+          # schema-changing, which disables the automatic rollback below. The
+          # opposite default would let an unknown state be silently reverted.
+          if SHOW=$(npm run --silent migration:show 2>/dev/null); then
+            PENDING=$(printf '%s\n' "$SHOW" | grep -c '^\[ \]' || true)
+          else
+            echo "migration:show failed — assuming this release changes the schema"
+            PENDING=1
+          fi
+          echo "PENDING_MIGRATIONS=${PENDING:-1}"
+
+          # Migrations run before the restart, so new code never meets an old
+          # schema. They are transactional, so a failure here stops the deploy
+          # with the previous release still serving.
+          npm run migration:run
+
+          pm2 restart startmessaging-server --update-env
+
+          mkdir -p ~/.sm-ops
+          printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$PREV" "$(git rev-parse HEAD)" \
+            >> ~/.sm-ops/RELEASES
+          REMOTE
+
+          prev=$(grep '^PREVIOUS_SHA=' release.out | cut -d= -f2)
+          pending=$(grep '^PENDING_MIGRATIONS=' release.out | cut -d= -f2)
+          echo "previous_sha=$prev" >> "$GITHUB_OUTPUT"
+          if [ "${pending:-1}" -gt 0 ]; then
+            echo "migrated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "migrated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prove it came back up
+        id: health
+        run: |
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              "${{ secrets.PRODUCTION_API_URL }}/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "production healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo '::error::production did not return a healthy /health within 45s'
+          ssh -i ~/.ssh/deploy.pem \
+            "${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}" \
+            'pm2 logs startmessaging-server --lines 60 --nostream'
+          exit 1
+
+      # Automatic rollback, but ONLY for a release that changed no schema.
+      #
+      # This is the whole reason `migrated` is measured. Reverting code across an
+      # applied migration puts old code in front of a new schema, which is the one
+      # combination neither version was ever tested against — so for a
+      # schema-changing release the correct move is to stop, say so loudly, and
+      # let a human choose between rolling forward and restoring the snapshot.
+      # Undoing it automatically would be the more dangerous of the two.
+      - name: Roll back a code-only release that failed its health check
+        if: failure() && steps.health.outcome == 'failure' && steps.release.outputs.migrated == 'false'
+        run: |
+          set -euo pipefail
+          PREV='${{ steps.release.outputs.previous_sha }}'
+          echo "::warning::health check failed on a code-only release — reverting to $PREV"
+
+          ssh -i ~/.ssh/deploy.pem \
+            "${{ secrets.PRODUCTION_USER }}@${{ secrets.PRODUCTION_HOST }}" \
+            "PREV='$PREV' bash -se" <<'REMOTE'
+          set -euo pipefail
+          cd ~/server
+          git checkout --quiet --detach "$PREV"
+          export NODE_OPTIONS=--max-old-space-size=640
+          npm run build
+          pm2 restart startmessaging-server --update-env
+          REMOTE
+
+          for _ in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              "${{ secrets.PRODUCTION_API_URL }}/health" || true)
+            [ "$code" = "200" ] && { echo "rolled back and healthy"; exit 0; }
+            sleep 1
+          done
+          echo '::error::rollback did not come back healthy either — production is DOWN'
+          exit 1
+
+      - name: Say plainly that a schema-changing release is still live
+        if: failure() && steps.health.outcome == 'failure' && steps.release.outputs.migrated == 'true'
+        run: |
+          echo '::error::This release ran migrations and then failed its health check. It has NOT been rolled back automatically, because reverting code across an applied migration is untested in both directions. Choose between rolling forward with a fix, or restoring the pre-deploy snapshot and redeploying the previous SHA. See PRODUCTION-DEPLOY.md.'
+          exit 1
+
+  summary:
+    needs: [guard, checkpoint, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record what shipped
+        run: |
+          {
+            echo "## Production release"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Ref requested | \`${{ needs.guard.outputs.ref }}\` |"
+            echo "| Replaced | \`${{ needs.deploy.outputs.previous || 'unknown' }}\` |"
+            echo "| Ran migrations | \`${{ needs.deploy.outputs.migrated || 'unknown' }}\` |"
+            echo "| Pre-deploy snapshot | \`${{ needs.checkpoint.outputs.snapshot || 'none' }}\` |"
+            echo "| Reason | ${INPUT_REASON:-(none given)} |"
+            echo ""
+            echo "To roll back: dispatch this workflow again with \`ref\` set to the replaced SHA above."
+          } >> "$GITHUB_STEP_SUMMARY"
