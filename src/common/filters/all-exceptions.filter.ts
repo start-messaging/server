@@ -65,8 +65,21 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.warn(logBody);
     }
 
-    if (!(exception instanceof HttpException)) {
-      Sentry.captureException(exception);
+    // Report when the throw was NOT a deliberate HttpException, OR when it
+    // resolved to 5xx. The `instanceof` test on its own silently dropped every
+    // deliberate server error: InternalServerErrorException,
+    // ServiceUnavailableException and BadGatewayException are all
+    // HttpExceptions, so a genuine 500 raised on purpose never reached Sentry.
+    // Expected 4xx stays out — that is the client being told no, not a fault to
+    // investigate — which is why the second test is `>= 500` and not `!== 200`.
+    //
+    // request.id is tagged so a Sentry issue can be matched to the OTEL log line
+    // emitted just above; they are the same incident and otherwise share no key.
+    if (!(exception instanceof HttpException) || status >= 500) {
+      Sentry.captureException(exception, {
+        tags: { request_id: String(errorId) },
+        extra: attributes,
+      });
     }
 
     let code: string = ErrorCodes.INTERNAL_ERROR;

@@ -3,12 +3,12 @@ import { defineConfig } from '@playwright/test';
 import { config as loadEnv } from 'dotenv';
 import { assertBuildIsCurrent } from './tests/e2e/global-setup';
 
-// The suite is deliberately pointed at `sm_test` and its own Redis logical
+// The suite is deliberately pointed at `startmessaging_test` and its own Redis logical
 // DB. `sm_db` is the development database, holding real users, messages and
 // leads; a test run truncates freely, so the two must never be the same
 // target.
 //
-// `sm_test` is shared with the admin-panel and dashboard e2e suites, so those
+// `startmessaging_test` is shared with the admin-panel and dashboard e2e suites, so those
 // runs cannot overlap with this one — run them one at a time.
 //
 // `.env.e2e` is gitignored, so it cannot be the only source: a fresh clone has

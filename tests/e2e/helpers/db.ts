@@ -18,7 +18,7 @@ export async function db(): Promise<Client> {
   const name = process.env.DATABASE_NAME;
   // A guard, not a formality. Every reset in this file truncates, and
   // `sm_db` — the development database on the same Postgres — holds real
-  // users, messages and leads. `sm_test` is the only acceptable target.
+  // users, messages and leads. `startmessaging_test` is the only acceptable target.
   if (!name || !/e2e|test/i.test(name)) {
     throw new Error(
       `Refusing to run E2E tests against database "${name}". ` +

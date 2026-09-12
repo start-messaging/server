@@ -4,7 +4,7 @@ import { Client } from 'pg';
  * One suite at a time against the shared test database.
  *
  * The server API suite, both panel suites and the Jest specs all target
- * `sm_test`, and each of the three e2e suites TRUNCATEs a table list before
+ * `startmessaging_test`, and each of the three e2e suites TRUNCATEs a table list before
  * every test. Two of them overlapping does not fail cleanly — one truncates
  * rows the other has just seeded, and the result is a scatter of assertion
  * failures that name whatever was being tested rather than the collision.

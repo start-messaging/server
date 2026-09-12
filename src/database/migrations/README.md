@@ -191,7 +191,7 @@ the seeded singleton row overrides nothing.
 
 ### Verified before handover
 
-Rehearsed on `sm_test`, which held the exact ten-step result beforehand. The
+Rehearsed on `startmessaging_test`, which held the exact ten-step result beforehand. The
 reference is a `pg_dump --schema-only` of that state.
 
 | Check | Result |

@@ -195,7 +195,17 @@ export const envValidationSchema = Joi.object({
    */
   SENTRY_DSN: Joi.string().allow('').optional(),
   SENTRY_ENABLED: Joi.boolean().empty('').default(true),
-  SENTRY_ENVIRONMENT: Joi.string().allow('').optional(),
+  /**
+   * Constrained, because instrument.ts arms Sentry only when this is exactly
+   * 'production'. A typo — `Production`, `prod` — is therefore not a mistake
+   * anyone notices; it is error reporting silently switched off on the one box
+   * that needs it. Refusing an unknown value at boot is the only place that can
+   * be caught.
+   */
+  SENTRY_ENVIRONMENT: Joi.string()
+    .valid('production', 'staging', 'development')
+    .empty('')
+    .optional(),
   POSTHOG_API_KEY: Joi.string().allow('').optional(),
   POSTHOG_HOST: Joi.string().uri().empty('').default('https://us.i.posthog.com'),
 });

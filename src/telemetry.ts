@@ -14,7 +14,7 @@ import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import * as Sentry from '@sentry/nestjs';
 import { SentryPropagator, SentrySampler } from '@sentry/opentelemetry';
-import { sentryClient } from './instrument.js';
+import { sentryClient, sentryDisabledReason } from './instrument.js';
 
 const apiKey = process.env.POSTHOG_API_KEY;
 const host = process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com';
@@ -61,7 +61,11 @@ if (apiKey || sentryClient) {
   console.log(
     `[telemetry] OTEL SDK started —` +
       `${apiKey ? ' logs will be exported to PostHog;' : ''}` +
-      `${sentryClient ? ' Sentry error capture is active' : ''}`,
+      `${
+        sentryClient
+          ? ' Sentry error capture is active'
+          : ` Sentry is OFF (${sentryDisabledReason})`
+      }`,
   );
 }
 

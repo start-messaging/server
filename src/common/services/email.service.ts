@@ -4,7 +4,7 @@ import {
   OnboardingBlockedStep,
   OnboardingReminderStage,
 } from '../../onboarding/enums/onboarding-reminder.enum.js';
-import { APP_NAME } from '../constants/app.constants.js';
+import { ADMIN_PANEL_URL, APP_NAME } from '../constants/app.constants.js';
 
 /**
  * The mark shown at the top of every email.
@@ -79,6 +79,60 @@ const ONBOARDING_STEP_COPY: Record<
 /** Sentence-cases a clause that is otherwise written to sit mid-sentence. */
 function leadingCapital(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** One reminder variant's wording, with no recipient's name in it. */
+export interface OnboardingReminderCopy {
+  stage: OnboardingReminderStage;
+  blockedStep: OnboardingBlockedStep;
+  /** The subject line as it lands in the inbox. */
+  subject: string;
+  /** The heading, minus the "Hi <name>, " the send prepends. */
+  headline: string;
+  /** The one thing we are asking the customer to do. */
+  ask: string;
+  /** Why we are asking, as the mail puts it. */
+  why: string;
+}
+
+/**
+ * What one reminder actually says.
+ *
+ * Exported so the admin growth screen can name the copy behind a send instead
+ * of inventing a description of it. `sendOnboardingReminderEmail` builds its
+ * subject and heading from this same function, so the two cannot drift — the
+ * failure this closes is an ops screen confidently captioning a row with
+ * wording no customer ever received.
+ */
+export function describeOnboardingReminder(
+  stage: OnboardingReminderStage,
+  blockedStep: OnboardingBlockedStep,
+): OnboardingReminderCopy {
+  const isFinal = stage === OnboardingReminderStage.DAY_7;
+  const action = ONBOARDING_STEP_COPY[blockedStep];
+
+  return {
+    stage,
+    blockedStep,
+    subject: isFinal
+      ? `Still want to go live? ${leadingCapital(action.pending)}`
+      : action.subject,
+    // "One step left" is true on day two and grating on day seven, where the
+    // reader has already had a week of it. The final note leads with the state
+    // of the account instead.
+    headline: isFinal ? action.pending : action.title,
+    ask: action.what,
+    why: action.why,
+  };
+}
+
+/** Every reminder variant we are capable of sending, for ops screens. */
+export function onboardingReminderCatalogue(): OnboardingReminderCopy[] {
+  const stages = Object.values(OnboardingReminderStage);
+  const steps = Object.values(OnboardingBlockedStep);
+  return stages.flatMap((stage) =>
+    steps.map((step) => describeOnboardingReminder(stage, step)),
+  );
 }
 
 @Injectable()
@@ -175,6 +229,40 @@ export class EmailService {
     return this.sendEmail(email, subject, html);
   }
 
+  /**
+   * Internal notification that a submission is waiting for review.
+   *
+   * Nothing pushed this before: a pending KYC only became visible by opening the
+   * admin panel and noticing the queue, so a customer could wait days on a
+   * review nobody knew about.
+   *
+   * Carries no PAN, no GSTIN and no document — deliberately. The fact of the
+   * submission is the whole signal; the data sits one click away behind an
+   * authenticated page, which keeps a set of someone's identity documents out of
+   * an inbox and out of every mail archive that inbox feeds.
+   */
+  async sendKycSubmittedAdminEmail(
+    email: string,
+    submission: { userId: string; businessName: string; customerEmail: string },
+  ) {
+    const businessName = this.escapeHtml(submission.businessName);
+    const customerEmail = this.escapeHtml(submission.customerEmail);
+    const reviewUrl = `${ADMIN_PANEL_URL}/kyc-review/${encodeURIComponent(
+      submission.userId,
+    )}`;
+
+    const subject = `KYC submitted for review \u2014 ${submission.businessName}`;
+    const html = this.wrapEmail({
+      title: 'A KYC submission is waiting for review',
+      body: `
+        <p><strong>${businessName}</strong> (${customerEmail}) has submitted KYC documents.</p>
+        <p><a href="${reviewUrl}">Open the submission in the admin panel</a></p>
+        <p>Approving or rejecting it notifies the customer automatically.</p>
+      `,
+    });
+    return this.sendEmail(email, subject, html);
+  }
+
   async sendKycStatusUpdateEmail(
     email: string,
     businessName: string,
@@ -249,25 +337,20 @@ export class EmailService {
     step: OnboardingBlockedStep,
   ) {
     const isFinal = stage === OnboardingReminderStage.DAY_7;
-    const action = ONBOARDING_STEP_COPY[step];
+    const copy = describeOnboardingReminder(stage, step);
 
-    const subject = isFinal
-      ? `Still want to go live? ${leadingCapital(action.pending)}`
-      : action.subject;
+    const subject = copy.subject;
 
     const html = this.wrapEmail({
-      // "One step left" is true on day two and grating on day seven, where the
-      // reader has already had a week of it. The final note leads with the
-      // state of the account instead.
-      title: `Hi ${displayName}, ${isFinal ? action.pending : action.title}`,
+      title: `Hi ${displayName}, ${copy.headline}`,
       body: `
         <p>${
           isFinal
             ? 'Your StartMessaging account has been open for a week, but it still is not ready to send.'
             : 'Thanks for signing up to StartMessaging. Your account is almost ready.'
         }</p>
-        <p><strong>${action.what}</strong></p>
-        <p>${action.why}</p>
+        <p><strong>${copy.ask}</strong></p>
+        <p>${copy.why}</p>
         ${
           isFinal
             ? '<p style="color:#6b7280;">This is the last reminder we will send about this. Your account stays open either way — pick it up whenever you are ready.</p>'
@@ -278,6 +361,29 @@ export class EmailService {
     });
 
     return this.sendEmail(email, subject, html);
+  }
+
+  /**
+   * Escapes values that came from a customer before they are interpolated into
+   * mail HTML.
+   *
+   * Needed because the KYC notification is the first message that puts
+   * customer-supplied text — `businessName`, straight off SubmitKycDto — in
+   * front of an ADMIN rather than in front of the person who typed it. Markup
+   * echoed back to its own author is harmless; the same string rendered in a
+   * reviewer's inbox is a phishing primitive, because a businessName of
+   * `<a href="...">Approve now</a>` arrives as a link inside a genuine
+   * StartMessaging email and a reviewer has every reason to trust it.
+   *
+   * `&` is replaced first, or it would double-escape the entities added after it.
+   */
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private buildDefaultFromEmail(domain?: string): string {

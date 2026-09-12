@@ -40,6 +40,8 @@ test.describe('admin API', () => {
     ['GET', '/admin/kyc'],
     ['GET', '/admin/dashboard'],
     ['GET', '/admin/dashboard/daily-usage'],
+    ['GET', '/admin/growth'],
+    ['GET', '/admin/growth/notes'],
     ['GET', '/admin/channels'],
     ['GET', '/admin/templates'],
   ];
