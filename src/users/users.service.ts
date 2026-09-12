@@ -7,12 +7,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { MoreThan, Not, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import * as Sentry from '@sentry/nestjs';
 import { randomInt } from 'crypto';
 import { User } from './entities/user.entity.js';
 import { MobileOtp } from './entities/mobile-otp.entity.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { SubmitKycDto } from './dto/submit-kyc.dto.js';
 import { KycStatus } from './enums/kyc-status.enum.js';
+import { UserRole } from './enums/user-role.enum.js';
 import { EmailService } from '../common/services/email.service.js';
 import { istDayStart } from '../common/utils/date.util.js';
 import {
@@ -254,7 +256,70 @@ export class UsersService {
         });
     }
 
+    // Tell whoever reviews KYC that there is something to review. Not awaited,
+    // for the same reason the acknowledgement above is not: the submission row
+    // is already committed, and a Mailgun outage must not turn a successful
+    // submission into a failed request for the customer.
+    void this.notifyAdminsOfKycSubmission(user);
+
     return user;
+  }
+
+  /**
+   * Emails every active admin that a KYC submission is waiting.
+   *
+   * Recipients are derived from the `admin` role rather than a configured
+   * address, so adding a reviewer to the team starts notifying them with no
+   * deployment and no variable to forget.
+   *
+   * `sendEmail` signals failure by RETURNING FALSE rather than throwing, so the
+   * results are inspected explicitly: a bare `.catch()` — the pattern used for
+   * the acknowledgement above — can never fire for a Mailgun rejection, which is
+   * how a failed send would otherwise leave no trace beyond a pm2 log line.
+   *
+   * There is deliberately no retry. The admin panel's pending queue stays the
+   * source of truth for what needs reviewing; this mail is a nudge, so a failure
+   * is worth reporting but not worth a queue and its duplicate-send risk.
+   */
+  private async notifyAdminsOfKycSubmission(user: User): Promise<void> {
+    try {
+      const admins = await this.usersRepository.find({
+        where: { role: UserRole.ADMIN, isActive: true },
+        select: { id: true, email: true },
+      });
+
+      if (admins.length === 0) {
+        Sentry.captureMessage(
+          'KYC submitted but no active admin account exists to notify',
+          'warning',
+        );
+        return;
+      }
+
+      const sent = await Promise.all(
+        admins.map((admin) =>
+          this.emailService.sendKycSubmittedAdminEmail(admin.email, {
+            userId: user.id,
+            businessName: user.businessName ?? user.email,
+            customerEmail: user.email,
+          }),
+        ),
+      );
+
+      const failedCount = sent.filter((ok) => !ok).length;
+      if (failedCount > 0) {
+        Sentry.captureMessage(
+          `KYC review notification failed for ${failedCount} of ${admins.length} admin(s) (user ${user.id})`,
+          'error',
+        );
+      }
+    } catch (err) {
+      // A notification problem must never reach the customer's submit response,
+      // so this swallows — but reports, which is the part that was missing.
+      Sentry.captureException(err, {
+        tags: { task: 'kyc-admin-notification' },
+      });
+    }
   }
 
   async getKycDetails(userId: string): Promise<Partial<User>> {
