@@ -35,6 +35,14 @@ const USER_SORT_WHITELIST: SortWhitelist = {
   last_login: 'user.lastLoginAt',
   kyc_status: 'user.kycStatus',
   role: 'user.role',
+  // Balance lives in `wallets`, not on the user row. A correlated subquery
+  // rather than a join keeps the list query join-free, so TypeORM's skip/take
+  // stays a plain LIMIT/OFFSET instead of switching to its DISTINCT-subquery
+  // path. The lookup rides UQ_wallets_userId — one index hit per candidate row.
+  // COALESCE: a user with no wallet row holds nothing, so it sorts as 0 rather
+  // than being pushed to the end as NULL.
+  wallet_balance:
+    'COALESCE((SELECT w.balance FROM wallets w WHERE w."userId" = user.id), 0)',
 };
 
 /** Sort keys the KYC review queue may order by. */

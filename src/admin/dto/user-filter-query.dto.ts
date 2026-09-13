@@ -11,6 +11,7 @@ export const USER_LIST_SORT_FIELDS = [
   'last_login',
   'kyc_status',
   'role',
+  'wallet_balance',
 ] as const;
 
 export type UserListSortField = (typeof USER_LIST_SORT_FIELDS)[number];
