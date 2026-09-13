@@ -35,6 +35,8 @@ const USER_SORT_WHITELIST: SortWhitelist = {
   last_login: 'user.lastLoginAt',
   kyc_status: 'user.kycStatus',
   role: 'user.role',
+  wallet_balance:
+    'COALESCE((SELECT w.balance FROM wallets w WHERE w."userId" = user.id), 0)',
 };
 
 /** Sort keys the KYC review queue may order by. */
