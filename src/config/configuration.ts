@@ -78,27 +78,30 @@ export default () => ({
   /**
    * The "you haven't finished signing up" nudges.
    *
-   * There is no switch. The sweep runs wherever this process is production AND
-   * can actually deliver mail, which is production and nowhere else:
+   * One condition, deliberately: NODE_ENV=production. Ship the code to
+   * production and the reminders go — there is no variable to remember, which
+   * is the whole point. ONBOARDING_REMINDERS_ENABLED was removed on 2026-09-14
+   * for the opposite failure: it defaulted off, nobody set it on the box, and
+   * not one reminder had ever been sent while the code sat there looking live.
    *
-   * - staging runs NODE_ENV=production on purpose (STAGING.md), so NODE_ENV
-   *   alone cannot tell the two boxes apart — staging is kept out by having no
-   *   Mailgun key, which STAGING.md lists as deliberate;
-   * - a laptop runs NODE_ENV=development, whatever database `.env` names;
-   * - the e2e suites run NODE_ENV=test.
+   * A Mailgun-configured check was briefly ANDed onto this and was removed on
+   * 2026-09-23. It was doing a second job — keeping staging quiet — and paid
+   * for it by making "will this send?" depend on two things instead of one.
    *
-   * This replaced ONBOARDING_REMINDERS_ENABLED on 2026-09-14. That flag
-   * defaulted off and was never set on the production box, so not one reminder
-   * had ever been sent, and the admin Signups screen was the first thing to say
-   * so. The one combination that now emails customers from the wrong place is a
-   * local API run with NODE_ENV=production and a real Mailgun key against a
-   * database holding real addresses — never run that.
+   * What that costs, stated plainly: staging runs NODE_ENV=production on
+   * purpose (STAGING.md), so its sweep runs too. No mail can leave there — it
+   * has no Mailgun key, and every address in that database was rewritten to
+   * @staging.invalid — but each attempt claims a row and marks it `failed`, so
+   * staging's onboarding_reminders fills with failures. That is noise in a
+   * throwaway database, and it is the price of the single condition.
+   *
+   * A laptop runs NODE_ENV=development and the e2e suites run NODE_ENV=test, so
+   * neither sends. The one way to mail customers from the wrong place is to
+   * start the API locally with NODE_ENV=production against a database holding
+   * real addresses — never run that.
    */
   onboardingReminders: {
-    enabled:
-      process.env.NODE_ENV === 'production' &&
-      !!process.env.MAILGUN_API_KEY &&
-      !!process.env.MAILGUN_DOMAIN,
+    enabled: process.env.NODE_ENV === 'production',
     /**
      * Log who would be emailed and send nothing. Claims no rows, so a rehearsal
      * leaves every account exactly as eligible as it found it.

@@ -24,10 +24,11 @@ export class OnboardingRemindersSchedulerService implements OnModuleInit {
   /**
    * Whether this process should own the repeatable sweep.
    *
-   * Derived, not switched: `onboardingReminders.enabled` is true exactly where
-   * NODE_ENV is production and Mailgun is configured, which is production and
-   * nowhere else — staging also runs NODE_ENV=production but has no Mailgun key
-   * by design, and laptops run development (configuration.ts has the detail).
+   * Derived, not switched: `onboardingReminders.enabled` is true wherever
+   * NODE_ENV is production, so shipping the code to production is what starts
+   * the reminders. Staging runs NODE_ENV=production too and therefore sweeps,
+   * but cannot deliver: no Mailgun key, and its addresses are @staging.invalid
+   * (configuration.ts has the reasoning).
    *
    * It also keeps CI quiet: the e2e suite boots the full application as
    * NODE_ENV=test, and a sweep firing mid-test is both a race and an outbound
@@ -45,8 +46,8 @@ export class OnboardingRemindersSchedulerService implements OnModuleInit {
   onModuleInit(): void {
     if (!this.schedulingEnabled) {
       this.logger.log(
-        'Onboarding reminders only run where NODE_ENV=production and Mailgun is ' +
-          'configured — the reminder sweep is not scheduled here.',
+        'Onboarding reminders only run where NODE_ENV=production — the reminder ' +
+          'sweep is not scheduled here.',
       );
       // Not scheduling is not the same as unscheduling. The scheduler is
       // persisted in Redis, so an environment where the sweep ever ran keeps

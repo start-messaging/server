@@ -52,8 +52,7 @@ export class OnboardingRemindersProcessor extends WorkerHost {
     // registered and each sweep reads its gate when it fires.
     if (this.config.get<boolean>('onboardingReminders.enabled') !== true) {
       this.logger.warn(
-        'Skipping the reminder sweep: reminders only run where NODE_ENV=production ' +
-          'and Mailgun is configured. ' +
+        'Skipping the reminder sweep: reminders only run where NODE_ENV=production. ' +
           'A schedule registered by an earlier run is still producing jobs — ' +
           'remove it with the queue scheduler id "onboarding-reminders-sweep" ' +
           'if this environment should not be sending at all.',
