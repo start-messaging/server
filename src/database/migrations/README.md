@@ -182,7 +182,9 @@ deleted, rewritten or neutered in the ledger.
 
 ### It ships inert
 
-The onboarding sweep still requires `ONBOARDING_REMINDERS_ENABLED`, and every
+The onboarding sweep still required `ONBOARDING_REMINDERS_ENABLED` at the time
+(since 2026-09-14 there is no flag: it runs wherever `NODE_ENV=production` and
+Mailgun is configured, which is production only), and every
 leads consumer — ingest scheduler, liveness prober, enrichment sweep, outreach
 sender — is env-gated off by default. A deployment that sets none of the new
 variables gains empty tables and nothing else. Every knob in

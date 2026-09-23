@@ -687,8 +687,9 @@ export class GrowthService {
     let reason: string | null = null;
     if (neverAny) {
       reason =
-        'No onboarding reminder email has ever been sent. The onboarding_reminders table is empty, ' +
-        'because the reminder sweep only runs where ONBOARDING_REMINDERS_ENABLED is true.';
+        'No onboarding reminder email has ever been sent. The onboarding_reminders table is empty: ' +
+        'the reminder sweep runs only on production, hourly from 09:00 to 20:00 IST, and writes a ' +
+        'row only for an account 24-48 hours or 7-8 days old that still has a step of its own to finish.';
     } else if (none) {
       const last = iso(allTime.last_sent_at);
       reason =

@@ -24,16 +24,19 @@ export class OnboardingRemindersSchedulerService implements OnModuleInit {
   /**
    * Whether this process should own the repeatable sweep.
    *
-   * Unlike the affiliate scheduler, which defaults *on*, this one defaults
-   * *off* and has to be switched on deliberately. The asymmetry is the blast
-   * radius: the affiliate jobs move numbers in our own ledger, where a wrong
-   * run is repairable and invisible to customers. This one sends mail to real
-   * people, and `server/.env` points at the production database — so a
-   * developer running the API locally against it would otherwise start
-   * emailing live customers on boot, with no way to recall it.
+   * Derived, not switched: `onboardingReminders.enabled` is true exactly where
+   * NODE_ENV is production and Mailgun is configured, which is production and
+   * nowhere else — staging also runs NODE_ENV=production but has no Mailgun key
+   * by design, and laptops run development (configuration.ts has the detail).
    *
-   * It also keeps CI quiet: the e2e suite boots the full application, and a
-   * sweep firing mid-test is both a race and an outbound send.
+   * It also keeps CI quiet: the e2e suite boots the full application as
+   * NODE_ENV=test, and a sweep firing mid-test is both a race and an outbound
+   * send.
+   *
+   * This used to be an ONBOARDING_REMINDERS_ENABLED flag that defaulted off. It
+   * was never set on production, so no reminder was ever sent: the switch that
+   * existed to keep mail from the wrong inboxes kept it from the right ones
+   * too, and nothing said so.
    */
   private get schedulingEnabled(): boolean {
     return this.config.get<boolean>('onboardingReminders.enabled') === true;
@@ -42,12 +45,13 @@ export class OnboardingRemindersSchedulerService implements OnModuleInit {
   onModuleInit(): void {
     if (!this.schedulingEnabled) {
       this.logger.log(
-        'ONBOARDING_REMINDERS_ENABLED is not true — the reminder sweep is not scheduled.',
+        'Onboarding reminders only run where NODE_ENV=production and Mailgun is ' +
+          'configured — the reminder sweep is not scheduled here.',
       );
       // Not scheduling is not the same as unscheduling. The scheduler is
-      // persisted in Redis, so an environment that ever ran with the flag on
-      // keeps producing hourly sweeps after it is turned off — which is how a
-      // kill switch that reads as "off" everywhere still sent mail. The
+      // persisted in Redis, so an environment where the sweep ever ran keeps
+      // producing hourly sweeps after the conditions stop holding — which is
+      // how a kill switch that read as "off" everywhere once still sent mail. The
       // processor refuses those jobs now, but leaving them to be produced and
       // discarded every hour is noise standing where a real signal belongs.
       void this.removeStaleSchedule();
@@ -72,8 +76,8 @@ export class OnboardingRemindersSchedulerService implements OnModuleInit {
       const removed = await this.queue.removeJobScheduler(SWEEP_SCHEDULER);
       if (removed) {
         this.logger.warn(
-          'Removed an onboarding reminder schedule left over from a run with ' +
-            'ONBOARDING_REMINDERS_ENABLED=true. No further sweeps will be produced.',
+          'Removed an onboarding reminder schedule left over from a run where ' +
+            'reminders were on. No further sweeps will be produced.',
         );
       }
     } catch (err) {

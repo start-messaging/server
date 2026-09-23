@@ -78,14 +78,31 @@ export default () => ({
   /**
    * The "you haven't finished signing up" nudges.
    *
-   * `enabled` defaults to false, unlike every other sweep in this file. The
-   * others move our own numbers; this one puts mail in a customer's inbox, and
-   * `.env` here points at the production database — so the default has to be
-   * the one where running the API locally cannot email live accounts.
+   * There is no switch. The sweep runs wherever this process is production AND
+   * can actually deliver mail, which is production and nowhere else:
+   *
+   * - staging runs NODE_ENV=production on purpose (STAGING.md), so NODE_ENV
+   *   alone cannot tell the two boxes apart — staging is kept out by having no
+   *   Mailgun key, which STAGING.md lists as deliberate;
+   * - a laptop runs NODE_ENV=development, whatever database `.env` names;
+   * - the e2e suites run NODE_ENV=test.
+   *
+   * This replaced ONBOARDING_REMINDERS_ENABLED on 2026-09-14. That flag
+   * defaulted off and was never set on the production box, so not one reminder
+   * had ever been sent, and the admin Signups screen was the first thing to say
+   * so. The one combination that now emails customers from the wrong place is a
+   * local API run with NODE_ENV=production and a real Mailgun key against a
+   * database holding real addresses — never run that.
    */
   onboardingReminders: {
-    enabled: process.env.ONBOARDING_REMINDERS_ENABLED === 'true',
-    /** Log who would be emailed, write the rows, send nothing. */
+    enabled:
+      process.env.NODE_ENV === 'production' &&
+      !!process.env.MAILGUN_API_KEY &&
+      !!process.env.MAILGUN_DOMAIN,
+    /**
+     * Log who would be emailed and send nothing. Claims no rows, so a rehearsal
+     * leaves every account exactly as eligible as it found it.
+     */
     dryRun: process.env.ONBOARDING_REMINDERS_DRY_RUN === 'true',
     // maxPerRun moved to src/onboarding/constants/onboarding-reminders.constant.ts
   },

@@ -40,19 +40,20 @@ export class OnboardingRemindersProcessor extends WorkerHost {
     // The gate is checked here, at fire time, and not only where the schedule
     // is registered.
     //
-    // A BullMQ job scheduler lives in Redis, not in this process. So once
-    // ONBOARDING_REMINDERS_ENABLED had been true even once against a given
-    // Redis, turning it back to false only stopped the schedule being
-    // *re-registered* — the scheduler already stored there kept producing
-    // hourly sweeps, and this worker is registered unconditionally by
-    // OnboardingModule and kept sending them. The one switch that exists to
+    // A BullMQ job scheduler lives in Redis, not in this process. So once the
+    // sweep had been on even once against a given Redis (back when it was the
+    // ONBOARDING_REMINDERS_ENABLED flag), turning it off only stopped the
+    // schedule being *re-registered* — the scheduler already stored there kept
+    // producing hourly sweeps, and this worker is registered unconditionally by
+    // OnboardingModule and kept sending them. The one switch that existed to
     // stop mail reaching real customers did not stop it.
     //
     // Same shape as the leads pipeline, where every schedule is always
     // registered and each sweep reads its gate when it fires.
     if (this.config.get<boolean>('onboardingReminders.enabled') !== true) {
       this.logger.warn(
-        'Skipping the reminder sweep: ONBOARDING_REMINDERS_ENABLED is not true. ' +
+        'Skipping the reminder sweep: reminders only run where NODE_ENV=production ' +
+          'and Mailgun is configured. ' +
           'A schedule registered by an earlier run is still producing jobs — ' +
           'remove it with the queue scheduler id "onboarding-reminders-sweep" ' +
           'if this environment should not be sending at all.',

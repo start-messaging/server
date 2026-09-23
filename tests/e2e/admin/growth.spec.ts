@@ -639,9 +639,10 @@ test.describe('admin growth — signups, funnel, calling and reminder email', ()
   test('the reminder section says in words that nothing has been sent', async ({
     request,
   }) => {
-    // onboarding_reminders is empty because the sweep only runs where
-    // ONBOARDING_REMINDERS_ENABLED is true. An empty bar chart reads as a broken
-    // render; a sentence does not.
+    // onboarding_reminders is empty because the sweep only runs on production
+    // (NODE_ENV=production with Mailgun configured), and this suite runs as
+    // NODE_ENV=test. An empty bar chart reads as a broken render; a sentence
+    // does not.
     await seedCohort();
 
     const body = await growth(request, admin.accessToken, windowQuery());
@@ -651,7 +652,8 @@ test.describe('admin growth — signups, funnel, calling and reminder email', ()
     expect(body.email.none).toBe(true);
     expect(body.email.neverAny).toBe(true);
     expect(body.email.reason).toContain('has ever been sent');
-    expect(body.email.reason).toContain('ONBOARDING_REMINDERS_ENABLED');
+    expect(body.email.reason).toContain('runs only on production');
+    expect(body.email.reason).not.toContain('ONBOARDING_REMINDERS_ENABLED');
     expect(body.email.byStage).toEqual([]);
     expect(body.email.recent).toEqual([]);
 

@@ -149,10 +149,11 @@ export const envValidationSchema = Joi.object({
 
   // Onboarding reminders
   //
-  // Off unless explicitly switched on. An environment that has never heard of
-  // these variables sends nothing, which is what a developer pointed at a copy
-  // of production data needs the default to be.
-  ONBOARDING_REMINDERS_ENABLED: Joi.boolean().default(false),
+  // Deliberately no on/off switch: the sweep runs wherever NODE_ENV is
+  // production and Mailgun is configured (configuration.ts says why that means
+  // production only). DRY_RUN is the one knob — a rehearsal that logs every
+  // intended recipient and sends nothing. A leftover
+  // ONBOARDING_REMINDERS_ENABLED line in a box's .env is ignored, not refused.
   ONBOARDING_REMINDERS_DRY_RUN: Joi.boolean().default(false),
 
   // Custom testing
