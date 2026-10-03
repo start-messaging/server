@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resetDb, closeDb } from '../helpers/db.js';
 import {
   createCustomer,
@@ -17,12 +18,25 @@ import { CreatedKey, createKey, errorOf, keyRows } from './helpers.js';
  * This file is about the edges of the allow list — what it will accept, and what
  * an edit is allowed to do to it:
  *
- *  - the IP allow list is checked against `req.ip`, which is `trust proxy`'d.
+ *  - the IP allow list is checked against `req.ip`, which is `trust proxy`'d;
+ *  - a refusal is invisible to the caller, so the log line is the only record.
  *
  * Where the behaviour below looks wrong it is pinned, not corrected: a failing
  * assertion here would say "the product changed", which is the only useful
  * thing a test can say about a defect it cannot fix.
  */
+
+const LOG_PATH = process.env.E2E_SERVER_LOG ?? 'e2e-server.log';
+
+/** Byte offset, because logSince() slices a Buffer — see platform/pii-logging.spec.ts. */
+function logSize(): number {
+  return existsSync(LOG_PATH) ? statSync(LOG_PATH).size : 0;
+}
+
+function logSince(byteOffset: number): string {
+  if (!existsSync(LOG_PATH)) return '';
+  return readFileSync(LOG_PATH).subarray(byteOffset).toString('utf8');
+}
 
 test.describe('api key edge cases', () => {
   let customer: Customer;
@@ -359,6 +373,50 @@ test.describe('api key edge cases', () => {
 
       const [row] = await keyRows(customer.id);
       expect(row.allowedIps).toEqual(['203.0.113.5']);
+    });
+    test('an allow-list refusal is recorded in the log, and nowhere else', async ({
+      request,
+    }) => {
+      // The guard's 403 is discarded by CombinedAuthGuard, so the caller cannot
+      // tell an address mismatch from a typo'd key. That is deliberate — it stops
+      // whoever holds a leaked key using the allow list as an oracle for whether
+      // the key is still live — but it used to leave the refusal recorded
+      // nowhere at all. Support had nothing to read, so a customer whose egress
+      // address had moved was walked through rotating a key that was fine. The
+      // log line is now the only place the reason survives, which is exactly why
+      // it is asserted rather than left to be missed when it disappears.
+      const created = await createKey(request, customer.accessToken, {
+        allowedIps: ['203.0.113.5'],
+      });
+
+      const before = logSize();
+      const refused = await request.get('/api-keys', {
+        headers: {
+          'x-api-key': created.key,
+          // The shape nginx produces: whatever the caller sent, then the real
+          // peer appended on the right. Same fixture as the spoofing test above.
+          'x-forwarded-for': '203.0.113.5, 198.51.100.9',
+        },
+      });
+
+      // Nothing about the logging may change what the caller is told.
+      expect(refused.status(), await refused.text()).toBe(401);
+      expect((await errorOf(refused)).message).toBe('Authentication required');
+
+      const written = logSince(before);
+      expect(
+        written,
+        `nothing was written to ${LOG_PATH}; the log is not being captured, ` +
+          `so this test proves nothing`,
+      ).not.toBe('');
+
+      expect(written).toContain(created.id);
+      expect(written).toContain('is not in its allow list');
+      // The address recorded has to be the one the guard actually checked. A log
+      // that repeated the spoofed entry would point an investigation at whatever
+      // address the caller chose to name.
+      expect(written).toContain('request from 198.51.100.9');
+      expect(written).not.toContain('request from 203.0.113.5');
     });
   });
 });
