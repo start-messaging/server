@@ -35,6 +35,43 @@ jobs:
           chmod 600 ~/.ssh/deploy.pem
           ssh-keyscan -H "${{ secrets.STAGING_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
+      # The backup script travels from this workflow's own checkout, so the box
+      # always runs the version this file was written against.
+      - name: Check out the on-box backup script
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy
+
+      # A pre-deploy dump, but only on a box with the on-box backup layout
+      # (/srv/sms/staging/backups: the EC2 box, where staging's Postgres is
+      # local and the box bootstrap set it up). The old box has no such
+      # directory, and there staging keeps deploying exactly as it always has,
+      # without one. Where the layout exists a failed dump stops the deploy,
+      # because the migrations below are what it would be needed for.
+      - name: Dump the staging database on the box (EC2 box only)
+        env:
+          SSH_TARGET: ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # Copied into a temp file on the box and run from there rather than
+          # piped into `bash -s`, where any command that read stdin would
+          # swallow the rest of the script. stdout is the dump's path only.
+          rc=0
+          ssh -i ~/.ssh/deploy.pem "$SSH_TARGET" \
+            "if [ ! -d /srv/sms/staging/backups ]; then echo 'no /srv/sms/staging/backups here: not the EC2 box, so no pre-deploy dump' >&2; exit 0; fi; f=\$(mktemp) && cat >\"\$f\" && bash \"\$f\" staging pre-deploy-run$RUN_NUMBER; rc=\$?; rm -f \"\$f\"; exit \$rc" \
+            < deploy/backup-db.sh > dump.out || rc=$?
+          DUMP=$(tail -n 1 dump.out || true)
+          case "$rc" in
+            0) ;;
+            3) echo "::warning::The pre-deploy dump is on the box, but its copy to the backup bucket failed (see the log above)." ;;
+            *) echo "::error::The on-box pre-deploy dump failed (exit $rc). Nothing was deployed."; exit 1 ;;
+          esac
+          if [ -n "$DUMP" ]; then
+            echo "Pre-deploy dump: $DUMP"
+            echo "### Pre-deploy dump"$'\n'"\`$DUMP\` on the box." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # One script, run remotely, so the deploy is a single unit that either
       # finishes or leaves the previous release running.
       - name: Build and release

@@ -23,8 +23,9 @@ jobs:
     services:
       postgres:
         # The migrations create their own extensions (uuid-ossp, pg_trgm), so
-        # the stock image needs no preparation.
-        image: postgres:16
+        # the stock image needs no preparation. 17: the major production runs
+        # (RDS 17.9 until the move, then Postgres 17 on the EC2 box).
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -46,7 +47,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # The version the EC2 box runs for both products (bootstrap.sh pins
+          # it from whatsapp-server's .nvmrc), so CI tests what deploys.
+          node-version: 24.14.0
           cache: npm
 
       - run: npm ci

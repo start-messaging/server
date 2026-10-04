@@ -77,28 +77,46 @@ jobs:
     needs: guard
     uses: ./.github/workflows/ci.yml
 
+  # The pre-deploy checkpoint, in whichever of two worlds production is in.
+  #
+  # While production's database is RDS, the PRODUCTION_RDS_INSTANCE_ID secret
+  # names it and the checkpoint is an RDS snapshot, exactly as before. On the
+  # EC2 box that runs its own Postgres, that secret is deleted, and the
+  # checkpoint is a pg_dump taken ON the box by deploy/backup-db.sh. Nothing
+  # else in this workflow differs between the two: the deploy job below is the
+  # same ssh-and-build either way, so the old box keeps releasing exactly as it
+  # did until the secrets are switched. A secret cannot be tested in an `if:`,
+  # so its value is lifted into the job's env and the steps test that.
   checkpoint:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
+    env:
+      RDS_INSTANCE_ID: ${{ secrets.PRODUCTION_RDS_INSTANCE_ID }}
     outputs:
       snapshot: ${{ steps.snap.outputs.snapshot_id }}
+      dump: ${{ steps.dump.outputs.dump_path }}
     steps:
       - name: Configure AWS
+        if: env.RDS_INSTANCE_ID != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # An RDS snapshot rather than a pg_dump, and the choice is not stylistic. A
-      # dump taken on the box depends on the client version matching the server's:
-      # pg_dump 16.15 against a 17.9 instance has already produced a 4 KB file
-      # here that looked like a backup and contained nothing. A snapshot is taken
-      # by RDS itself, so there is no client version to mismatch.
+      # On RDS: a snapshot rather than a pg_dump, and the choice is not
+      # stylistic. A dump taken on the old box depends on the client version
+      # matching the server's: pg_dump 16.15 against the 17.9 instance has
+      # already produced a 4 KB file here that looked like a backup and
+      # contained nothing. A snapshot is taken by RDS itself, so there is no
+      # client version to mismatch. (On the EC2 box the database is local and
+      # its pg_dump is the server's own major, and backup-db.sh still compares
+      # the two, and checks the archive, before calling anything a backup.)
       - name: Snapshot the production database
         id: snap
+        if: env.RDS_INSTANCE_ID != ''
         run: |
           set -euo pipefail
           SNAP="sm-prod-predeploy-${{ github.run_number }}-$(echo '${{ github.sha }}' | cut -c1-7)"
@@ -119,6 +137,62 @@ jobs:
           {
             echo "### Pre-deploy snapshot"
             echo "\`$SNAP\` — restore from this if the release has to be undone."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The script travels from this workflow's own checkout, so the box
+      # always runs the version this file was written against, whatever
+      # release ~/server currently has checked out.
+      - name: Check out the on-box backup script
+        if: env.RDS_INSTANCE_ID == ''
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy
+
+      - name: Dump the production database on the box
+        id: dump
+        if: env.RDS_INSTANCE_ID == ''
+        env:
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SSH_HOST: ${{ secrets.PRODUCTION_HOST }}
+          SSH_USER: ${{ secrets.PRODUCTION_USER }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Copied into a temp file on the box and run from there rather than
+          # piped into `bash -s`: under -s, any command in the script that read
+          # stdin would swallow the rest of the script. Its log arrives on
+          # stderr (shown above); stdout is the dump's path and nothing else.
+          rc=0
+          ssh -i ~/.ssh/deploy.pem "$SSH_USER@$SSH_HOST" \
+            "f=\$(mktemp) && cat >\"\$f\" && bash \"\$f\" production pre-deploy-run$RUN_NUMBER; rc=\$?; rm -f \"\$f\"; exit \$rc" \
+            < deploy/backup-db.sh > dump.out || rc=$?
+          DUMP=$(tail -n 1 dump.out || true)
+
+          # 3: the dump is verified on the box but its bucket copy failed. The
+          # local file is what undoes a bad migration, so the release goes
+          # ahead, loudly. Anything else non-zero means there is no checkpoint,
+          # and no checkpoint means no release.
+          case "$rc" in
+            0) ;;
+            3) echo "::warning::The pre-deploy dump is on the box, but its copy to the backup bucket failed (see the log above). Deploying on the local copy." ;;
+            *) echo "::error::The on-box pre-deploy dump failed (exit $rc). Nothing was deployed."; exit 1 ;;
+          esac
+          # An empty production database means this box is not serving
+          # production yet: the migration's cutover has not happened here.
+          if [ -z "$DUMP" ]; then
+            echo "::error::Production's database on $SSH_HOST has no tables, so this box is not production yet. Nothing was deployed."
+            exit 1
+          fi
+
+          echo "dump_path=$DUMP" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pre-deploy dump"
+            echo "\`$DUMP\` on the box. If the release has to be undone: \`/srv/sms/bin/restore-db.sh production <that file>\` (PRODUCTION-DEPLOY.md)."
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
@@ -279,7 +353,7 @@ jobs:
       - name: Say plainly that a schema-changing release is still live
         if: failure() && steps.health.outcome == 'failure' && steps.release.outputs.migrated == 'true'
         run: |
-          echo '::error::This release ran migrations and then failed its health check. It has NOT been rolled back automatically, because reverting code across an applied migration is untested in both directions. Choose between rolling forward with a fix, or restoring the pre-deploy snapshot and redeploying the previous SHA. See PRODUCTION-DEPLOY.md.'
+          echo '::error::This release ran migrations and then failed its health check. It has NOT been rolled back automatically, because reverting code across an applied migration is untested in both directions. Choose between rolling forward with a fix, or restoring the pre-deploy checkpoint (the RDS snapshot, or the on-box dump named in the summary) and redeploying the previous SHA. See PRODUCTION-DEPLOY.md.'
           exit 1
 
   summary:
@@ -288,6 +362,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Record what shipped
+        env:
+          PREDEPLOY_DUMP: ${{ needs.checkpoint.outputs.dump }}
         run: |
           {
             echo "## Production release"
@@ -298,6 +374,7 @@ jobs:
             echo "| Replaced | \`${{ needs.deploy.outputs.previous || 'unknown' }}\` |"
             echo "| Ran migrations | \`${{ needs.deploy.outputs.migrated || 'unknown' }}\` |"
             echo "| Pre-deploy snapshot | \`${{ needs.checkpoint.outputs.snapshot || 'none' }}\` |"
+            echo "| Pre-deploy dump (on the box) | \`${PREDEPLOY_DUMP:-none}\` |"
             echo "| Reason | ${INPUT_REASON:-(none given)} |"
             echo ""
             echo "To roll back: dispatch this workflow again with \`ref\` set to the replaced SHA above."
