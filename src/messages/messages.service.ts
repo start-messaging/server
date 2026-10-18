@@ -6,12 +6,14 @@ import {
   EntityManager,
   Between,
   FindOptionsWhere,
+  In,
   IsNull,
   Not,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
 import { Message, MessageStatus } from './entities/message.entity.js';
+import { OtpTemplate } from '../channels/entities/otp-template.entity.js';
 import { SmsProviderFactory } from '../sms-providers/sms-provider.factory.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import {
@@ -53,6 +55,24 @@ export interface MessageFilters {
   status?: MessageStatus | string;
   apiKeyId?: string;
 }
+
+/**
+ * A template as a customer sees it: the name they already pick it by, never
+ * its body or its `metadata` — that maps our template to the provider's own
+ * template name, which names the provider.
+ */
+export interface CustomerTemplateRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * What the customer routes return. `otpTemplateId` is deliberately not on it:
+ * the nested ref carries the id, and the bare column stays an internal join key.
+ */
+export type CustomerMessage = Omit<Message, 'otpTemplate' | 'otpTemplateId'> & {
+  otpTemplate: CustomerTemplateRef | null;
+};
 
 export interface AdminMessageFilters extends MessageFilters {
   phoneNumber?: string;
@@ -258,12 +278,29 @@ export class MessagesService {
     return repo.save(message);
   }
 
+  /**
+   * The columns a customer may read.
+   *
+   * `renderedContent` joined this list on 2026-10-18 so the dashboard can show
+   * what was actually sent: `content` is the fixed placeholder "OTP sent", so
+   * until then a customer could not see their own message. It is safe to hand
+   * over because it is masked when it is written (`maskOtpDigits` in
+   * otp.service.ts replaces every 4-8 digit run), so the code itself never
+   * lands in it. `otpTemplateId` is read only to name the template below and
+   * is stripped before the row leaves the service.
+   *
+   * Everything provider-shaped stays out — `provider`, `providerMsgId`,
+   * `providerFailureReason`, `metadata`, `senderId` — and the e2e specs under
+   * tests/e2e/messages pin that.
+   */
   private readonly customerFields: (keyof Message)[] = [
     'id',
     'userId',
     'apiKeyId',
     'phoneNumber',
     'content',
+    'renderedContent',
+    'otpTemplateId',
     'status',
     'statusHistory',
     'costAmount',
@@ -310,7 +347,7 @@ export class MessagesService {
     sortBy?: string,
     sortOrder?: string,
     withCount = true,
-  ): Promise<[Message[], number]> {
+  ): Promise<[CustomerMessage[], number]> {
     const qb = this.messageRepository
       .createQueryBuilder('m')
       .select(this.customerFields.map((f) => `m.${f}`));
@@ -326,7 +363,12 @@ export class MessagesService {
     // makes a row appear twice or not at all while paging.
     qb.addOrderBy('m.id', 'DESC');
 
-    return paginateQueryBuilder(qb, { page, limit, withCount });
+    const [rows, total] = await paginateQueryBuilder(qb, {
+      page,
+      limit,
+      withCount,
+    });
+    return [await this.nameTemplates(rows), total];
   }
 
   /**
@@ -348,18 +390,68 @@ export class MessagesService {
 
     this.applyCustomerFilters(qb, userId, filters);
 
-    return paginateByCursor(qb, 'm', limit, cursor);
+    const page = await paginateByCursor(qb, 'm', limit, cursor);
+    return { ...page, items: await this.nameTemplates(page.items) };
   }
 
-  async findById(id: string, userId?: string): Promise<Message | null> {
+  async findById(id: string, userId?: string): Promise<CustomerMessage | null> {
     const where: FindOptionsWhere<Message> = { id };
     if (userId) {
       where.userId = userId;
     }
-    return this.messageRepository.findOne({
+    const message = await this.messageRepository.findOne({
       select: this.customerFields,
       where,
     });
+    return message ? this.nameTemplate(message) : null;
+  }
+
+  /**
+   * Swaps each row's template id for `{ id, name }`.
+   *
+   * One lookup per page, by primary key, for the handful of distinct templates
+   * on it — not a join. A join here would sit inside the counted offset query
+   * and the keyset query, and TypeORM treats `take` plus a join specially; the
+   * names live on a table of a few rows, so a second tiny query is the cheaper
+   * and safer shape.
+   *
+   * `withDeleted` is what keeps the history readable. Templates are soft-
+   * deleted, never removed, and the default lookup would answer null for every
+   * message sent with a template that has since been retired — the same trap
+   * `findByUserAdmin` documents. A row whose template cannot be found at all
+   * reads as "no template", the same as a send that used the fallback body.
+   */
+  private async nameTemplates(messages: Message[]): Promise<CustomerMessage[]> {
+    const ids = [
+      ...new Set(
+        messages.map((m) => m.otpTemplateId).filter((id): id is string => !!id),
+      ),
+    ];
+
+    const names = new Map<string, string>();
+    if (ids.length > 0) {
+      const templates = await this.dataSource.getRepository(OtpTemplate).find({
+        select: { id: true, name: true },
+        where: { id: In(ids) },
+        withDeleted: true,
+      });
+      for (const t of templates) names.set(t.id, t.name);
+    }
+
+    return messages.map(({ otpTemplateId, ...rest }) => {
+      const name = otpTemplateId ? names.get(otpTemplateId) : undefined;
+      return {
+        ...rest,
+        otpTemplate:
+          otpTemplateId && name !== undefined
+            ? { id: otpTemplateId, name }
+            : null,
+      };
+    });
+  }
+
+  private async nameTemplate(message: Message): Promise<CustomerMessage> {
+    return (await this.nameTemplates([message]))[0];
   }
 
   async findByProviderMsgId(providerMsgId: string): Promise<Message | null> {
@@ -399,7 +491,7 @@ export class MessagesService {
     });
   }
 
-  async checkStatus(id: string, userId: string): Promise<Message> {
+  async checkStatus(id: string, userId: string): Promise<CustomerMessage> {
     const message = await this.messageRepository.findOne({
       where: { id, userId },
     });
@@ -410,7 +502,7 @@ export class MessagesService {
 
     const terminalStatuses = [MessageStatus.DELIVERED, MessageStatus.FAILED];
     if (terminalStatuses.includes(message.status) || !message.providerMsgId) {
-      return this.pickCustomerFields(message);
+      return this.nameTemplate(this.pickCustomerFields(message));
     }
 
     // Single exit through the projection. This used to branch four ways, and
@@ -420,7 +512,9 @@ export class MessagesService {
     // that used to sit here was hiding that on the only live provider while
     // also denying customers a fresh status for transactional sends, which
     // receive no webhook at all.
-    return this.pickCustomerFields(await this.syncProviderStatus(id));
+    return this.nameTemplate(
+      this.pickCustomerFields(await this.syncProviderStatus(id)),
+    );
   }
 
   private mapProviderStatus(

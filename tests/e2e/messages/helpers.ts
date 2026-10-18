@@ -27,10 +27,15 @@ export async function errorOf(res: APIResponse) {
  * Columns the customer projection in MessagesService deliberately withholds.
  *
  * They are not merely uninteresting: `providerFailureReason` names the
- * upstream provider, `metadata` carries its raw payload, and
- * `renderedContent` is the exact text handed over. A previous version of
- * `checkStatus` returned the whole entity on one of its branches, which is
+ * upstream provider and `metadata` carries its raw payload. A previous version
+ * of `checkStatus` returned the whole entity on one of its branches, which is
  * the incident this list exists to re-check.
+ *
+ * `renderedContent` left this list on 2026-10-18: the dashboard now shows the
+ * customer what was sent, and the text is masked on the way into storage, so
+ * the code never reaches it (messages/body-and-template.spec.ts pins that).
+ * `otpTemplateId` stays: the template is exposed as a nested `{ id, name }`,
+ * and the bare column is an internal join key.
  */
 export const PROVIDER_ONLY_FIELDS = [
   'provider',
@@ -38,7 +43,6 @@ export const PROVIDER_ONLY_FIELDS = [
   'providerCost',
   'providerStatusDescription',
   'providerFailureReason',
-  'renderedContent',
   'metadata',
   'senderId',
   'smsLanguage',
@@ -49,7 +53,8 @@ export const PROVIDER_ONLY_FIELDS = [
   'deletedAt',
 ];
 
-export const SECRET_RENDERED = 'Rendered body 9#9#9 for AcmeCorp';
+/** What `seedProviderMessage` writes as the message text; the customer may read it. */
+export const RENDERED_TEXT = 'Rendered body 9#9#9 for AcmeCorp';
 export const SECRET_METADATA = 'provider-raw-payload-must-not-leak';
 
 export function expectNoProviderDetail(row: Record<string, unknown>) {
@@ -57,8 +62,11 @@ export function expectNoProviderDetail(row: Record<string, unknown>) {
     expect(row, `"${field}" reached the customer`).not.toHaveProperty(field);
   }
   const text = JSON.stringify(row);
-  expect(text).not.toContain(SECRET_RENDERED);
   expect(text).not.toContain(SECRET_METADATA);
+  // The seeded provider wording must stay out as well — the rest of the
+  // columns are checked by name above, this catches one that moved.
+  expect(text).not.toContain('Provider said');
+  expect(text).not.toContain('PROVIDER_INTERNAL_OK');
 }
 
 /**
@@ -95,7 +103,7 @@ export async function seedProviderMessage(
     [
       id,
       opts.providerMsgId ?? null,
-      SECRET_RENDERED,
+      RENDERED_TEXT,
       JSON.stringify({ report_payload: SECRET_METADATA }),
     ],
   );
