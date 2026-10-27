@@ -21,3 +21,15 @@ export function parseISTDate(dateString: string): Date {
   const utcMidnight = new Date(`${dateString}T00:00:00.000Z`);
   return new Date(utcMidnight.getTime() - IST_OFFSET_MS);
 }
+
+/**
+ * The IST calendar date (YYYY-MM-DD) that is `daysAgo` days before today.
+ * The same key a `TO_CHAR(ts AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')`
+ * bucket produces, so a window can be filled with zeros for the days that had
+ * no rows without the two disagreeing about which day it is.
+ */
+export function istDateKey(daysAgo = 0): string {
+  return new Date(istDayStart(daysAgo).getTime() + IST_OFFSET_MS)
+    .toISOString()
+    .slice(0, 10);
+}

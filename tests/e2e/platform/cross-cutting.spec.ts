@@ -148,18 +148,11 @@ test.describe('channels, dashboard, payments and webhooks', () => {
       data: { event: 'payment.captured', payload: {} },
     });
 
-    // A 2xx is correct here and is not the same as "accepted": a non-2xx makes
-    // the gateway retry, and an invalid signature is not a transient failure
-    // worth retrying. What matters is that the payload was not *processed* —
-    // the handler reports that as received:false.
-    expect(
-      res.status(),
-      'an unsigned webhook should not be a server error',
-    ).toBeLessThan(500);
-    const body = await payload<{ received: boolean }>(res);
-    expect(body.received, 'an unsigned gateway webhook was processed').toBe(
-      false,
-    );
+    // 401, never a 5xx and never a 2xx. A 2xx tells the gateway the event was
+    // delivered, so it would never retry a genuine webhook we could not verify
+    // (a secret mismatch) and nobody would learn the webhook was broken; a 401
+    // is retried and shows up as a failed delivery in the gateway dashboard.
+    expect(res.status(), 'an unsigned webhook must be refused').toBe(401);
 
     // And nothing was written.
     const [{ count }] = await sql<{ count: string }>(

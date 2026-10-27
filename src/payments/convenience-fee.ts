@@ -133,3 +133,68 @@ export function calculateConvenienceFee(
     chargedAmount,
   };
 }
+
+/**
+ * The inverse of {@link calculateConvenienceFee}: given what a customer's card
+ * was charged, which top-up does that pay for?
+ *
+ * Used by the admin panel when a customer has paid outside the app (a payment
+ * link or a custom payment raised by hand) and the wallet is credited manually.
+ * The person crediting needs the figure the app would have credited for that
+ * payment, not the figure on the receipt: crediting ₹1,024.17 for a payment
+ * that was ₹1,000 plus the gateway's fee gives the customer ₹24.17 they did not
+ * pay for.
+ *
+ * Rounding makes a closed form unsafe on its own — the forward calculation
+ * rounds to paise, so two adjacent credits can charge the same amount. So the
+ * closed-form answer is only the starting point: its neighbours are run
+ * through the real forward calculation and the one that reproduces the charge
+ * wins. When nothing reproduces it exactly (a charge the app could never have
+ * produced, such as a payment link for a round number), the nearest credit that
+ * does NOT exceed what was paid is returned, so a mistake errs against the
+ * customer by pennies rather than crediting money that was never received.
+ */
+export function breakdownFromCharged(
+  rawCharged: number,
+  config: ConvenienceFeeConfig,
+): FeeBreakdown {
+  const charged = toPaise(rawCharged);
+
+  if (config.percent <= 0) {
+    return { amount: toStored(charged), convenienceFee: 0, chargedAmount: charged };
+  }
+
+  const rate =
+    config.mode === 'simple'
+      ? config.percent / 100
+      : (config.percent / 100) * (1 + config.gstPercent / 100);
+
+  // Same guard as the forward direction: a rate that consumes the whole
+  // payment has no solution, so nothing is deducted.
+  if (config.mode === 'gross_up' && rate >= 1) {
+    return { amount: toStored(charged), convenienceFee: 0, chargedAmount: charged };
+  }
+
+  const guess =
+    config.mode === 'simple' ? charged / (1 + rate) : charged * (1 - rate);
+
+  let best: FeeBreakdown | null = null;
+  for (let step = -3; step <= 3; step++) {
+    const candidate = toPaise(guess + step * 0.01);
+    if (candidate <= 0) continue;
+    const forward = calculateConvenienceFee(candidate, config);
+    if (forward.chargedAmount > charged) continue;
+    if (
+      best === null ||
+      forward.chargedAmount > best.chargedAmount ||
+      (forward.chargedAmount === best.chargedAmount &&
+        forward.amount > best.amount)
+    ) {
+      best = forward;
+    }
+  }
+
+  return (
+    best ?? { amount: 0, convenienceFee: 0, chargedAmount: 0 }
+  );
+}

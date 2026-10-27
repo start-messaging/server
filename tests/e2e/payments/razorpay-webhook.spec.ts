@@ -46,14 +46,16 @@ test.describe('payments: the razorpay webhook', () => {
     await closeDb();
   });
 
-  test('an unsigned or wrongly signed webhook is acknowledged but not processed', async ({
+  test('an unsigned or wrongly signed webhook is refused with 401 and not processed', async ({
     request,
   }) => {
-    // A non-2xx makes the gateway retry, and a bad signature is not worth
-    // retrying — so 2xx with `received: false` is correct, and is not the same
-    // thing as "accepted". What must never happen is a 500: this endpoint is
-    // public and unauthenticated, and an empty POST once turned
-    // Buffer.from(undefined) into one.
+    // 401, not 2xx. The gateway reads any 2xx as delivered and never retries,
+    // so answering 200 to a genuine event we could not verify (the dashboard's
+    // webhook secret and ours differ) threw every payment's webhook away with
+    // nothing anywhere to show for it. A 401 is retried and listed as a failed
+    // delivery in the gateway's dashboard. What must never happen is a 500:
+    // this endpoint is public and unauthenticated, and an empty POST once
+    // turned Buffer.from(undefined) into one.
     const seeded = await seedPayment({ userId: customer.id });
     const before = await balanceOf(customer.id);
     const captured = webhookEvent('payment.captured', {
@@ -84,12 +86,11 @@ test.describe('payments: the razorpay webhook', () => {
 
     for (const [candidate, description] of cases) {
       const res = await postWebhook(request, raw, candidate);
-      expect(res.status(), `${description} returned ${res.status()}`).toBe(201);
-      expect(
-        (await payload<{ received: boolean }>(res)).received,
-        description,
-      ).toBe(false);
+      expect(res.status(), `${description} returned ${res.status()}`).toBe(401);
     }
+    expect(await balanceOf(customer.id), 'a refused webhook credited').toBe(
+      before,
+    );
 
     // And the real signature does settle it, so the six refusals above were
     // about the signature and not about something else being wrong.
@@ -102,8 +103,7 @@ test.describe('payments: the razorpay webhook', () => {
     request,
   }) => {
     const res = await postWebhook(request, '{}');
-    expect(res.status(), await res.text()).toBe(201);
-    expect((await payload<{ received: boolean }>(res)).received).toBe(false);
+    expect(res.status(), await res.text()).toBe(401);
   });
 
   test('a captured amount that is not what the order was raised for credits nothing', async ({

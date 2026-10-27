@@ -24,6 +24,20 @@ export interface SignatureVerificationParams {
   signature: string;
 }
 
+/**
+ * One attempt to pay an order, as the gateway itself reports it.
+ *
+ * `status` is the gateway's own word, passed through untouched ('captured' is
+ * the only one that means money was taken). `amount` is in major units (rupees),
+ * converted from the gateway's minor unit at the boundary so nothing above this
+ * file ever has to remember paise.
+ */
+export interface GatewayOrderPayment {
+  id: string;
+  status: string;
+  amount: number;
+}
+
 export interface PaymentGateway {
   name: string;
   createOrder(params: CreateOrderParams): Promise<CreateOrderResult>;
@@ -37,6 +51,14 @@ export interface PaymentGateway {
     signature: string,
     rawBody?: Buffer,
   ): Promise<WebhookVerificationResult>;
+  /**
+   * Asks the gateway what happened to an order, instead of waiting to be told.
+   *
+   * This is what lets a payment be settled when neither the browser callback
+   * nor the webhook ever arrived — the gateway's own record is the authority,
+   * not whichever message happened to reach us.
+   */
+  fetchOrderPayments(gatewayOrderId: string): Promise<GatewayOrderPayment[]>;
   getPublicKey(): string;
   verifyPaymentSignature(params: SignatureVerificationParams): boolean;
 }

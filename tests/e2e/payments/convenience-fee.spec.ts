@@ -6,6 +6,7 @@ import {
   Customer,
 } from '../helpers/actors.js';
 import {
+  breakdownFromCharged,
   calculateConvenienceFee,
   DEFAULT_CONVENIENCE_FEE,
 } from '../../../src/payments/convenience-fee.js';
@@ -261,5 +262,84 @@ test.describe('convenience fee persistence', () => {
     );
     expect(Number(row.amount)).toBe(1000);
     expect(Number(row.amount)).not.toBe(Number(row.chargedAmount));
+  });
+});
+
+/**
+ * The reverse direction: what is a payment of X worth as a credit?
+ *
+ * Used when an admin credits a customer who paid outside the app. The property
+ * that matters is the round trip — charging for a credit and then asking what
+ * that charge buys must give the credit back — and, where it cannot (a charge
+ * the app could never have produced), that the answer never exceeds what was
+ * actually paid.
+ */
+test.describe('convenience fee arithmetic: working back from a payment', () => {
+  const SIMPLE = { mode: 'simple' as const, percent: 2, gstPercent: 18 };
+  const GROSS = { mode: 'gross_up' as const, percent: 2, gstPercent: 18 };
+
+  test('the figures an admin will actually meet', () => {
+    expect(breakdownFromCharged(1020, SIMPLE)).toEqual({
+      amount: 1000,
+      convenienceFee: 20,
+      chargedAmount: 1020,
+    });
+    expect(breakdownFromCharged(1024.17, GROSS)).toEqual({
+      amount: 1000,
+      convenienceFee: 24.17,
+      chargedAmount: 1024.17,
+    });
+  });
+
+  test('charging for a credit and asking what it buys returns the credit', () => {
+    // Every whole rupee and a spread of paise amounts, both modes. A closed
+    // form alone fails some of these by a paisa — the forward rounding lets
+    // two adjacent credits charge the same amount — which is the reason the
+    // implementation tests neighbours.
+    const credits = [
+      ...Array.from({ length: 300 }, (_, i) => i + 1),
+      499.99, 500.5, 1000.01, 1234.56, 2500.75, 9999.99, 100000,
+    ];
+    for (const config of [SIMPLE, GROSS]) {
+      for (const credit of credits) {
+        const charged = calculateConvenienceFee(credit, config).chargedAmount;
+        const back = breakdownFromCharged(charged, config);
+        expect(
+          back.chargedAmount,
+          `${config.mode} ${credit}: the charge changed on the way back`,
+        ).toBe(charged);
+        // Adjacent credits can charge the same, so the answer may be the
+        // larger twin of the original — never a different amount by more than
+        // a paisa, and never less.
+        expect(back.amount, `${config.mode} ${credit}`).toBeGreaterThanOrEqual(
+          credit - 0.01,
+        );
+        expect(back.amount, `${config.mode} ${credit}`).toBeLessThanOrEqual(
+          credit + 0.01,
+        );
+      }
+    }
+  });
+
+  test('a charge the app could never have produced never credits more than was paid', () => {
+    // ₹1,000 flat, as if a payment link had been raised for a round number.
+    // In gross-up mode that pays for slightly less than ₹1,000 of credit.
+    for (const config of [SIMPLE, GROSS]) {
+      for (const paid of [1000, 250, 77.77, 5000, 12.34]) {
+        const back = breakdownFromCharged(paid, config);
+        expect(back.chargedAmount, `${config.mode} ${paid}`).toBeLessThanOrEqual(
+          paid,
+        );
+        expect(back.amount, `${config.mode} ${paid}`).toBeLessThanOrEqual(paid);
+        expect(back.amount, `${config.mode} ${paid}`).toBeGreaterThan(0);
+      }
+    }
+    expect(breakdownFromCharged(1000, GROSS).amount).toBe(976.4);
+  });
+
+  test('with no fee configured the payment is the credit', () => {
+    expect(
+      breakdownFromCharged(500, { mode: 'simple', percent: 0, gstPercent: 18 }),
+    ).toEqual({ amount: 500, convenienceFee: 0, chargedAmount: 500 });
   });
 });

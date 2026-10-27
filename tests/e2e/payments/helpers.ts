@@ -139,6 +139,14 @@ export async function seedPayment(opts: {
   gateway?: string;
   gatewayPaymentId?: string | null;
   deleted?: boolean;
+  /**
+   * What the (fake) gateway reports for this order when asked — see
+   * FakeGateway.fetchOrderPayments. `amount` in rupees. Absent means the
+   * order was opened and nothing was ever attempted.
+   */
+  gatewayPayments?: { id: string; status: string; amount: number }[];
+  /** Backdates the order, to put it inside or outside the reconciliation window. */
+  ageMinutes?: number;
 }): Promise<SeededPayment> {
   const orderId = unique('order');
   const amount = opts.amount ?? CREDIT;
@@ -149,9 +157,10 @@ export async function seedPayment(opts: {
     `INSERT INTO "payments"
        ("userId", "gateway", "gatewayOrderId", "gatewayPaymentId", "amount",
         "convenienceFee", "chargedAmount", "currency", "status",
-        "idempotencyKey", "deletedAt")
+        "idempotencyKey", "deletedAt", "metadata", "createdAt")
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'INR',
-             $8::"payments_status_enum", $9, $10)
+             $8::"payments_status_enum", $9, $10, $11,
+             now() - make_interval(mins => $12::int))
      RETURNING "id"`,
     [
       opts.userId,
@@ -164,6 +173,10 @@ export async function seedPayment(opts: {
       opts.status ?? 'created',
       unique('idem'),
       opts.deleted ? new Date() : null,
+      opts.gatewayPayments
+        ? JSON.stringify({ fakeGatewayPayments: opts.gatewayPayments })
+        : null,
+      opts.ageMinutes ?? 0,
     ],
   );
 
@@ -260,4 +273,36 @@ export function postWebhook(
       ...(signature === undefined ? {} : { 'x-razorpay-signature': signature }),
     },
   });
+}
+
+/**
+ * Runs the reconciliation sweep through the admin route.
+ *
+ * `minAgeMinutes: 0` by default: a spec seeds an order and sweeps it in the
+ * same second, and the production default of three minutes would skip it.
+ * Specs that are about the age floor pass their own.
+ */
+export const reconcile = (
+  request: APIRequestContext,
+  adminToken: string,
+  data: Record<string, unknown> = {},
+) =>
+  request.post('/admin/payments/reconcile', {
+    data: { minAgeMinutes: 0, ...data },
+    headers: auth(adminToken),
+  });
+
+export interface ReconcileEntryBody {
+  gatewayOrderId: string;
+  outcome: string;
+  amount: number;
+  gatewayPaymentId?: string;
+}
+
+export interface ReconcileReportBody {
+  dryRun: boolean;
+  checked: number;
+  capped: boolean;
+  entries: ReconcileEntryBody[];
+  errors: { gatewayOrderId: string; message: string }[];
 }

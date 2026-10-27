@@ -9,6 +9,7 @@ import Razorpay from 'razorpay';
 import {
   CreateOrderParams,
   CreateOrderResult,
+  GatewayOrderPayment,
   PaymentGateway,
   SignatureVerificationParams,
   WebhookVerificationResult,
@@ -60,6 +61,21 @@ export class RazorpayGateway implements PaymentGateway {
       gatewayOrderId: order.id,
       gatewayData: order as any,
     };
+  }
+
+  async fetchOrderPayments(
+    gatewayOrderId: string,
+  ): Promise<GatewayOrderPayment[]> {
+    if (!this.client)
+      throw new InternalServerErrorException('Razorpay not configured');
+
+    const res = await this.client.orders.fetchPayments(gatewayOrderId);
+    return (res.items ?? []).map((p) => ({
+      id: p.id,
+      status: p.status,
+      // Razorpay reports paise; everything above the gateway works in rupees.
+      amount: Number(p.amount) / 100,
+    }));
   }
 
   getPublicKey(): string {

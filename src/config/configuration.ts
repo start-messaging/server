@@ -166,6 +166,14 @@ export default () => ({
       webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
     },
     /**
+     * The sweep that asks the gateway about unpaid orders. Derived, not
+     * switched: it runs wherever NODE_ENV is production (see
+     * PaymentReconciliationSchedulerService for why not a flag).
+     */
+    reconciliation: {
+      enabled: process.env.NODE_ENV === 'production',
+    },
+    /**
      * The customer pays the gateway's cut. Always — this is what a top-up
      * costs, not a mode the deployment can be in.
      *

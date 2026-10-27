@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -28,6 +29,8 @@ import { ChannelsService } from '../channels/channels.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { ApiKeysService } from '../api-keys/api-keys.service.js';
 import { PaymentsService } from '../payments/payments.service.js';
+import { PaymentReconciliationService } from '../payments/payment-reconciliation.service.js';
+import { ReconcilePaymentsDto } from './dto/reconcile-payments.dto.js';
 import { AdminUpdateUserDto } from './dto/admin-update-user.dto.js';
 import { AdminTopupDto } from './dto/admin-topup.dto.js';
 import { TagsService } from '../tags/tags.service.js';
@@ -80,6 +83,7 @@ export class AdminController {
     private readonly walletService: WalletService,
     private readonly apiKeysService: ApiKeysService,
     private readonly paymentsService: PaymentsService,
+    private readonly paymentReconciliation: PaymentReconciliationService,
     private readonly tagsService: TagsService,
     private readonly growthService: GrowthService,
   ) {}
@@ -210,6 +214,7 @@ export class AdminController {
       revenueTrends,
       pendingKycCount,
       razorpayStats,
+      collections,
     ] = await Promise.all([
       // Was `findAll(1, 1)`, which built the full filtered user query and
       // hydrated a throwaway User entity just to read the count off the tuple.
@@ -222,6 +227,7 @@ export class AdminController {
       this.walletService.getRevenueTrends(7),
       this.usersService.countByKycStatus(KycStatus.PENDING),
       this.paymentsService.getRazorpayCompletedStats(),
+      this.walletService.getCollectionStats(),
     ]);
 
     return {
@@ -234,6 +240,15 @@ export class AdminController {
         razorpayPaymentsTotal: razorpayStats.totalAmount,
         razorpayPaymentsToday: razorpayStats.todayAmount,
         razorpayPaymentsCount: razorpayStats.completedCount,
+        // Everything received, from the ledger: app checkouts AND payments
+        // credited by hand. The razorpayPayments* fields above stay as they
+        // were (Razorpay checkouts only) for a panel build that still reads
+        // them; the dashboard card reads these.
+        collectionsTotal: collections.total,
+        collectionsToday: collections.today,
+        collectionsCount: collections.count,
+        collectionsRazorpay: collections.razorpay,
+        collectionsManual: collections.manual,
       },
       growth: {
         newUsersToday: userStats.newToday,
@@ -250,6 +265,23 @@ export class AdminController {
         revenue: revenueTrends,
       },
     };
+  }
+
+  @Get('dashboard/collections')
+  @ApiOperation({
+    summary: 'Daily collections for the last N days, with growth (admin)',
+    description:
+      'Money received per IST day — app checkouts and payments credited by ' +
+      'hand — oldest first, every day present. Also the same-length period ' +
+      'before it, and the percentage change, so growth is visible at a glance.',
+  })
+  getCollections(@Query('days') days?: string) {
+    // Whole days, 1–365. Bounded because the query scans twice the window.
+    const n = days === undefined ? 30 : Number(days);
+    if (!Number.isInteger(n) || n < 1 || n > 365) {
+      throw new BadRequestException('days must be a whole number from 1 to 365');
+    }
+    return this.walletService.getCollectionsByDay(n);
   }
 
   @Get('dashboard/daily-usage')
@@ -412,11 +444,15 @@ export class AdminController {
       ? `${adminUserId} | ${dto.internalNote}`
       : adminUserId;
 
+    // Money received outside the app is its own kind of credit so that it
+    // counts as a collection; goodwill and promotional credits stay
+    // 'admin_topup' and do not. No reason given is treated as not-a-payment —
+    // see AdminTopupDto.reason.
     const transaction = await this.walletService.credit(
       user.id,
       dto.amount,
       dto.description,
-      'admin_topup',
+      dto.reason === 'payment' ? 'admin_payment' : 'admin_topup',
       reference,
     );
 
@@ -433,6 +469,50 @@ export class AdminController {
       balanceAfter: Number(transaction.balanceAfter),
       transactionId: transaction.id,
     };
+  }
+
+  @Get('payments/fee-quote')
+  @ApiOperation({
+    summary: 'Work out a custom payment and its wallet credit (admin)',
+    description:
+      'Exactly one of `credit` or `paid`. `credit` answers "to credit this ' +
+      'much, how much should the customer pay?" — the figure to put on a ' +
+      'payment link. `paid` answers "the customer paid this much, how much ' +
+      'do I credit?". Uses the same fee rule as the in-app checkout, so a ' +
+      'custom payment costs what an app top-up would.',
+  })
+  feeQuote(@Query('credit') credit?: string, @Query('paid') paid?: string) {
+    // Exactly one, because supplying both is ambiguous: the two answers need
+    // not agree, and silently preferring one is how a wrong figure gets sent.
+    if ((credit === undefined) === (paid === undefined)) {
+      throw new BadRequestException('Send exactly one of credit or paid');
+    }
+    const value = Number(credit ?? paid);
+    // Same ceiling as an in-app top-up, so the figure stays inside what the
+    // payments table can store.
+    if (!Number.isFinite(value) || value <= 0 || value > 1_000_000) {
+      throw new BadRequestException(
+        `${credit !== undefined ? 'credit' : 'paid'} must be between 0.01 and 1000000`,
+      );
+    }
+    return credit !== undefined
+      ? this.paymentsService.quoteWithMode(value)
+      : this.paymentsService.quoteFromCharge(value);
+  }
+
+  @Post('payments/reconcile')
+  @ApiOperation({
+    summary: 'Settle payments the browser and the webhook both missed (admin)',
+    description:
+      'Asks the payment gateway about every unpaid order in the window and ' +
+      'credits the ones it reports as captured, for exactly the amount the ' +
+      'order was raised for. The same sweep the scheduler runs every five ' +
+      'minutes; this is for running it now, over a wider window, or as a ' +
+      'dry run first. Safe to repeat: an order is credited once however many ' +
+      'times it is swept.',
+  })
+  reconcilePayments(@Body() dto: ReconcilePaymentsDto) {
+    return this.paymentReconciliation.run(dto);
   }
 
   // Tags — admin-only labelling of customer accounts

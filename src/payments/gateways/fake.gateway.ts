@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
+import type { DataSource } from 'typeorm';
 import {
   CreateOrderParams,
   CreateOrderResult,
+  GatewayOrderPayment,
   PaymentGateway,
   SignatureVerificationParams,
   WebhookVerificationResult,
@@ -21,7 +23,10 @@ import {
  * verify/webhook resolve the gateway from the row by that name.
  */
 export class FakeGateway implements PaymentGateway {
-  constructor(private readonly real: PaymentGateway) {}
+  constructor(
+    private readonly real: PaymentGateway,
+    private readonly dataSource: DataSource,
+  ) {}
 
   get name(): string {
     return this.real.name;
@@ -43,6 +48,28 @@ export class FakeGateway implements PaymentGateway {
       status: 'created',
     };
     return { gatewayOrderId: order.id, gatewayData: order };
+  }
+
+  /**
+   * What "the gateway" says happened to an order.
+   *
+   * The API runs in its own process, so a spec cannot hand it an in-memory
+   * stub. The gateway's side of the story is read instead from the order's own
+   * stored `metadata.fakeGatewayPayments` — a list of `{ id, status, amount }`
+   * with `amount` in rupees — which a spec writes next to the row it seeds.
+   * An order with nothing there has had no payment attempts, as a real order
+   * that was opened and abandoned has not.
+   */
+  async fetchOrderPayments(
+    gatewayOrderId: string,
+  ): Promise<GatewayOrderPayment[]> {
+    const rows: { attempts: GatewayOrderPayment[] | null }[] =
+      await this.dataSource.query(
+        `SELECT "metadata"->'fakeGatewayPayments' AS "attempts"
+           FROM "payments" WHERE "gatewayOrderId" = $1`,
+        [gatewayOrderId],
+      );
+    return rows[0]?.attempts ?? [];
   }
 
   getPublicKey(): string {

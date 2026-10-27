@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -9,6 +10,18 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+
+/**
+ * Why a manual credit is being made.
+ *
+ * `payment` is real money received outside the app (a payment link, a bank or
+ * UPI transfer): it counts toward collections. `goodwill` and `promo` are
+ * credits given away: they do not. The ledger needs to be able to tell the two
+ * apart, because "how much did we collect" must not include a credit that
+ * nobody paid for.
+ */
+export const TOPUP_REASONS = ['payment', 'goodwill', 'promo'] as const;
+export type TopupReason = (typeof TOPUP_REASONS)[number];
 
 /**
  * A manual wallet credit made by an admin.
@@ -51,4 +64,20 @@ export class AdminTopupDto {
   @IsString()
   @MaxLength(200)
   internalNote?: string;
+
+  /**
+   * Whether this credit is money received. Optional so existing callers keep
+   * working, and when it is left out the credit is treated as NOT a collection:
+   * the safe direction, since counting a goodwill credit as revenue overstates
+   * the business, while a missed payment is visible and fixable.
+   */
+  @ApiPropertyOptional({
+    enum: TOPUP_REASONS,
+    description:
+      '`payment` = real money received outside the app (counts as a ' +
+      'collection). `goodwill` / `promo` = given away (does not).',
+  })
+  @IsOptional()
+  @IsIn(TOPUP_REASONS)
+  reason?: TopupReason;
 }

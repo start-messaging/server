@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { istDayStart } from '../common/utils/date.util.js';
+import { istDateKey, istDayStart } from '../common/utils/date.util.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Wallet } from './entities/wallet.entity.js';
@@ -581,5 +581,139 @@ export class WalletService {
       date: r.date,
       revenue: parseFloat(r.revenue),
     }));
+  }
+
+  /**
+   * Money received from customers, as wallet credits.
+   *
+   * Counted from the ledger rather than from the `payments` table so that every
+   * way money arrives is one number with one clock:
+   *  - `payment`: a Razorpay checkout settled by the app;
+   *  - `admin_payment`: a payment received outside the app and credited by hand
+   *    with the reason "payment";
+   *  - older manual credits (`admin_topup`) whose description says "Payment
+   *    received". The reason was not recorded before, and that sentence is what
+   *    the top-up screen's own preset wrote, so it is the evidence there is.
+   *    Rewriting ledger rows to tag them was weighed and rejected: the ledger is
+   *    the record of money, and a predicate costs nothing.
+   *
+   * Goodwill and promotional credits are deliberately absent — nobody paid for
+   * them. Amounts are what the wallet was credited, not what the card was
+   * charged: the gateway's fee is not revenue.
+   */
+  static readonly COLLECTION_PREDICATE = `(
+    t."type" = 'credit' AND (
+      t."referenceType" IN ('payment', 'admin_payment')
+      OR (t."referenceType" = 'admin_topup'
+          AND t."description" LIKE 'Payment received%')
+    )
+  )`;
+
+  /** All-time and today's collections, split by where the money came from. */
+  async getCollectionStats(): Promise<{
+    total: number;
+    today: number;
+    count: number;
+    razorpay: number;
+    manual: number;
+  }> {
+    const [row] = await this.dataSource.query(
+      `SELECT
+         COALESCE(SUM(t."amount"), 0) AS "total",
+         COALESCE(SUM(t."amount") FILTER (WHERE t."createdAt" >= $1), 0) AS "today",
+         COUNT(*) AS "count",
+         COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" = 'payment'), 0) AS "razorpay",
+         COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" <> 'payment'), 0) AS "manual"
+       FROM "wallet_transactions" t
+       WHERE ${WalletService.COLLECTION_PREDICATE}`,
+      [istDayStart()],
+    );
+    return {
+      total: parseFloat(row.total),
+      today: parseFloat(row.today),
+      count: parseInt(row.count, 10),
+      razorpay: parseFloat(row.razorpay),
+      manual: parseFloat(row.manual),
+    };
+  }
+
+  /**
+   * Collections per IST day for the last `days` days, today included, with
+   * every day present (zero when nothing came in) so a chart does not have to
+   * guess, plus the same-length period before it for a growth comparison.
+   *
+   * One bounded range scan over `IDX_wallet_tx_type_createdAt`, covering twice
+   * the window, bucketed by IST date in the database.
+   */
+  async getCollectionsByDay(days: number) {
+    const windowStart = istDayStart(days - 1);
+    const previousStart = istDayStart(2 * days - 1);
+
+    const rows: {
+      date: string;
+      razorpay: string;
+      manual: string;
+      count: string;
+    }[] = await this.dataSource.query(
+      `SELECT
+         TO_CHAR(t."createdAt" AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS "date",
+         COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" = 'payment'), 0) AS "razorpay",
+         COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" <> 'payment'), 0) AS "manual",
+         COUNT(*) AS "count"
+       FROM "wallet_transactions" t
+       WHERE t."createdAt" >= $1 AND ${WalletService.COLLECTION_PREDICATE}
+       GROUP BY 1`,
+      [previousStart],
+    );
+
+    const byDate = new Map(rows.map((r) => [r.date, r]));
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const at = (daysAgo: number) => {
+      const r = byDate.get(istDateKey(daysAgo));
+      const razorpay = round(parseFloat(r?.razorpay ?? '0'));
+      const manual = round(parseFloat(r?.manual ?? '0'));
+      return {
+        date: istDateKey(daysAgo),
+        razorpay,
+        manual,
+        total: round(razorpay + manual),
+        count: parseInt(r?.count ?? '0', 10),
+      };
+    };
+
+    // Oldest first, as a chart reads it.
+    const series = Array.from({ length: days }, (_, i) => at(days - 1 - i));
+    const previous = Array.from({ length: days }, (_, i) => at(2 * days - 1 - i));
+
+    const sum = (xs: { total: number }[]) =>
+      round(xs.reduce((a, x) => a + x.total, 0));
+    const total = sum(series);
+    const previousTotal = sum(previous);
+    const best = series.reduce<(typeof series)[number] | null>(
+      (b, d) => (d.total > (b?.total ?? 0) ? d : b),
+      null,
+    );
+
+    return {
+      days: series,
+      totals: {
+        total,
+        razorpay: round(series.reduce((a, d) => a + d.razorpay, 0)),
+        manual: round(series.reduce((a, d) => a + d.manual, 0)),
+        count: series.reduce((a, d) => a + d.count, 0),
+        averagePerDay: round(total / days),
+        bestDay: best ? { date: best.date, total: best.total } : null,
+      },
+      previous: {
+        total: previousTotal,
+        count: previous.reduce((a, d) => a + d.count, 0),
+      },
+      // Null, not zero or infinity, when there is nothing to compare against:
+      // "up from nothing" is not a percentage.
+      growthPercent:
+        previousTotal > 0
+          ? round(((total - previousTotal) / previousTotal) * 100)
+          : null,
+    };
   }
 }

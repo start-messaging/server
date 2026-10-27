@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { DataSource } from 'typeorm';
 import { RazorpayGateway } from './razorpay.gateway.js';
 import { FakeGateway } from './fake.gateway.js';
 import { PaymentGateway } from './payment-gateway.interface.js';
@@ -11,6 +12,7 @@ export class PaymentGatewayFactory {
   constructor(
     razorpay: RazorpayGateway,
     private readonly config: ConfigService,
+    dataSource: DataSource,
   ) {
     // Double lock, same idiom as the console SMS provider: the env flag alone
     // is not enough, NODE_ENV must ALSO be 'test'. A fake gateway reachable in
@@ -22,7 +24,7 @@ export class PaymentGatewayFactory {
       this.config.get<boolean>('payments.fakeGateway') === true &&
       this.config.get<string>('NODE_ENV') === 'test';
     const razorpayGateway: PaymentGateway = useFake
-      ? new FakeGateway(razorpay)
+      ? new FakeGateway(razorpay, dataSource)
       : razorpay;
     this.gateways = new Map<string, PaymentGateway>([
       ['razorpay', razorpayGateway],

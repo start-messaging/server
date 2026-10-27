@@ -230,12 +230,9 @@ test.describe('payments: verifying a checkout', () => {
       expect((await errorOf(res)).message).toBe('Invalid payment signature');
     }
 
-    // The service sets `status = FAILED` and saves it before throwing — but
-    // the save and the throw are inside the same SERIALIZABLE transaction, so
-    // TypeORM rolls that UPDATE back along with the exception. The row is
-    // still `created` and the FAILED branch never reaches the database.
-    // Pinned as it stands rather than endorsed: it is what lets a later good
-    // callback settle, but it is not what the code reads as if it does.
+    // A forged signature is refused and writes nothing: the row stays
+    // `created`, so a later genuine callback still settles, and a forged
+    // request cannot fail someone else's pending payment.
     expect((await paymentRow(seeded.id)).status).toBe('created');
     expect(await creditsFor(seeded.id)).toHaveLength(0);
     expect(await balanceOf(customer.id)).toBe(before);
@@ -246,8 +243,7 @@ test.describe('payments: verifying a checkout', () => {
   }) => {
     // The customer whose first callback arrived mangled: their money was
     // captured, and the retry with the real signature still credits them.
-    // Exactly once. The refused attempt leaves the row exactly as it was —
-    // the FAILED write it attempts is rolled back with the exception.
+    // Exactly once. The refused attempt leaves the row exactly as it was.
     const seeded = await seedPayment({ userId: customer.id });
     const before = await balanceOf(customer.id);
 
@@ -363,10 +359,10 @@ test.describe('payments: verifying a checkout', () => {
   test('two identical verifications sent at once credit the wallet once', async ({
     request,
   }) => {
-    // The double-click case. The service runs SERIALIZABLE with the payment
-    // row locked, so the loser of the race may come back as a serialization
-    // failure rather than a tidy "already verified" — which is why the
-    // assertion that matters is on the ledger, not on the status codes.
+    // The double-click case. Both requests lock the payment row; the loser
+    // waits, then reads COMPLETED and answers "already verified". Both must
+    // succeed — a paying customer is never shown an error for clicking twice —
+    // and the assertion that matters is still the ledger.
     const seeded = await seedPayment({ userId: customer.id });
     const before = await balanceOf(customer.id);
 
@@ -376,9 +372,9 @@ test.describe('payments: verifying a checkout', () => {
     ]);
     const statuses = responses.map((r) => r.status());
 
-    expect(statuses, 'neither concurrent verification succeeded').toContain(
-      201,
-    );
+    expect(statuses, 'a concurrent verification was not a success').toEqual([
+      201, 201,
+    ]);
     expect(await creditsFor(seeded.id)).toHaveLength(1);
     expect(await balanceOf(customer.id)).toBe(before + CREDIT);
     expect((await paymentRow(seeded.id)).status).toBe('completed');
@@ -459,16 +455,14 @@ test.describe('payments: verifying a checkout', () => {
     expect(await balanceOf(customer.id)).toBe(before);
   });
 
-  test('a refunded payment is not treated as settled and is credited all over again', async ({
+  test('a refunded payment cannot be replayed into a second credit', async ({
     request,
   }) => {
-    // PINNED, NOT ENDORSED. The idempotency check is `status === COMPLETED`
-    // only, so a payment that has been refunded — money already returned to
-    // the customer — is not treated as settled. Replaying the original
-    // checkout callback flips it back to `completed` and credits the wallet
-    // for money the business no longer holds. The callback is replayable
-    // indefinitely because the signature never expires, so the customer keeps
-    // the goods, the refund, and now the balance as well.
+    // This used to be pinned the other way: the idempotency check stopped at
+    // COMPLETED, so replaying the original callback flipped a refunded payment
+    // back to `completed` and credited the wallet for money the business had
+    // already returned. The signature never expires, so that was repeatable
+    // indefinitely. REFUNDED is final now.
     const seeded = await seedPayment({
       userId: customer.id,
       status: 'refunded',
@@ -482,10 +476,11 @@ test.describe('payments: verifying a checkout', () => {
       verifyBody(seeded),
     );
 
-    expect(res.status(), await res.text()).toBe(201);
-    expect((await paymentRow(seeded.id)).status).toBe('completed');
-    expect(await creditsFor(seeded.id)).toHaveLength(1);
-    expect(await balanceOf(customer.id)).toBe(before + CREDIT);
+    expect(res.status(), await res.text()).toBe(400);
+    expect((await errorOf(res)).message).toBe('Payment has been refunded');
+    expect((await paymentRow(seeded.id)).status).toBe('refunded');
+    expect(await creditsFor(seeded.id)).toHaveLength(0);
+    expect(await balanceOf(customer.id)).toBe(before);
   });
 
   test("a deactivated account's captured payment is still settled", async ({
