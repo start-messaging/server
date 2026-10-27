@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, Repository } from 'typeorm';
 import { Tag } from './entities/tag.entity.js';
+import { COLLECTION_CREDIT_PREDICATE } from '../wallet/constants/collection-credit.constant.js';
 
 /**
  * A fact about an account that is calculated, never stored.
@@ -345,10 +346,17 @@ export class TagsService {
            FROM users u
            LEFT JOIN wallets w ON w."userId" = u.id
            LEFT JOIN (
-             SELECT "userId",
-                    COUNT(*) FILTER (WHERE status = 'completed') AS topups,
-                    COALESCE(SUM(amount) FILTER (WHERE status = 'completed'), 0) AS paid
-               FROM payments GROUP BY "userId"
+             -- Money received, from the ledger, so a payment credited by hand
+             -- counts as well as an app checkout (see
+             -- COLLECTION_CREDIT_PREDICATE). Scoped to the users asked about
+             -- rather than aggregating every customer's history.
+             SELECT w."userId",
+                    COUNT(*) AS topups,
+                    COALESCE(SUM(t."amount"), 0) AS paid
+               FROM wallet_transactions t
+               JOIN wallets w ON w.id = t."walletId"
+              WHERE w."userId" = ANY($1) AND ${COLLECTION_CREDIT_PREDICATE}
+              GROUP BY w."userId"
            ) p ON p."userId" = u.id
            LEFT JOIN (
              SELECT "userId",

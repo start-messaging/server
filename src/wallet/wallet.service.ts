@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { istDateKey, istDayStart } from '../common/utils/date.util.js';
+import { COLLECTION_CREDIT_PREDICATE } from './constants/collection-credit.constant.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Wallet } from './entities/wallet.entity.js';
@@ -583,32 +584,6 @@ export class WalletService {
     }));
   }
 
-  /**
-   * Money received from customers, as wallet credits.
-   *
-   * Counted from the ledger rather than from the `payments` table so that every
-   * way money arrives is one number with one clock:
-   *  - `payment`: a Razorpay checkout settled by the app;
-   *  - `admin_payment`: a payment received outside the app and credited by hand
-   *    with the reason "payment";
-   *  - older manual credits (`admin_topup`) whose description says "Payment
-   *    received". The reason was not recorded before, and that sentence is what
-   *    the top-up screen's own preset wrote, so it is the evidence there is.
-   *    Rewriting ledger rows to tag them was weighed and rejected: the ledger is
-   *    the record of money, and a predicate costs nothing.
-   *
-   * Goodwill and promotional credits are deliberately absent — nobody paid for
-   * them. Amounts are what the wallet was credited, not what the card was
-   * charged: the gateway's fee is not revenue.
-   */
-  static readonly COLLECTION_PREDICATE = `(
-    t."type" = 'credit' AND (
-      t."referenceType" IN ('payment', 'admin_payment')
-      OR (t."referenceType" = 'admin_topup'
-          AND t."description" LIKE 'Payment received%')
-    )
-  )`;
-
   /** All-time and today's collections, split by where the money came from. */
   async getCollectionStats(): Promise<{
     total: number;
@@ -625,7 +600,7 @@ export class WalletService {
          COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" = 'payment'), 0) AS "razorpay",
          COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" <> 'payment'), 0) AS "manual"
        FROM "wallet_transactions" t
-       WHERE ${WalletService.COLLECTION_PREDICATE}`,
+       WHERE ${COLLECTION_CREDIT_PREDICATE}`,
       [istDayStart()],
     );
     return {
@@ -661,7 +636,7 @@ export class WalletService {
          COALESCE(SUM(t."amount") FILTER (WHERE t."referenceType" <> 'payment'), 0) AS "manual",
          COUNT(*) AS "count"
        FROM "wallet_transactions" t
-       WHERE t."createdAt" >= $1 AND ${WalletService.COLLECTION_PREDICATE}
+       WHERE t."createdAt" >= $1 AND ${COLLECTION_CREDIT_PREDICATE}
        GROUP BY 1`,
       [previousStart],
     );

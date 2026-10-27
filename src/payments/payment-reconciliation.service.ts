@@ -70,6 +70,18 @@ export interface ReconcileReport {
 export class PaymentReconciliationService {
   private readonly logger = new Logger(PaymentReconciliationService.name);
 
+  /**
+   * Orders already warned about, by outcome, since this process started.
+   *
+   * A held-back order (captured but credited by hand, authorised but not
+   * captured, wrong amount) stays that way until a person acts, and the sweep
+   * meets it again every five minutes for three days. Warning each time would
+   * be ~860 identical lines per order and would bury the lines that matter. One
+   * warning per order per process is enough to be seen; the admin report still
+   * lists them every time, and a restart re-warns, which is the right moment.
+   */
+  private readonly warned = new Set<string>();
+
   constructor(
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
@@ -191,6 +203,13 @@ export class PaymentReconciliationService {
    */
   private logReport(report: ReconcileReport): void {
     for (const e of report.entries) {
+      if (e.outcome !== 'settled' && e.outcome !== 'would_settle') {
+        const key = `${e.outcome}:${e.gatewayOrderId}`;
+        if (this.warned.has(key)) continue;
+        // Bounded: a process that runs for months must not grow this forever.
+        if (this.warned.size > 5000) this.warned.clear();
+        this.warned.add(key);
+      }
       const detail = `order ${e.gatewayOrderId} (user ${e.userId}, ₹${e.amount})`;
       switch (e.outcome) {
         case 'settled':

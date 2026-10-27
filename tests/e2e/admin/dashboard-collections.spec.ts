@@ -310,6 +310,59 @@ test.describe('admin dashboard — collections', () => {
     }
   });
 
+  test("a customer's top-up count and \"Never topped up\" tag follow the same rule", async ({
+    request,
+  }) => {
+    // The second place the same bug lived: each customer's top-up count was
+    // read from completed app checkouts only, so someone credited by hand for
+    // a payment they had made still showed as "Never topped up" — which is the
+    // label that decides who gets chased.
+    const overview = async () => {
+      const res = await request.get(`/admin/users/${customer.id}/overview`, {
+        headers: auth(admin.accessToken),
+      });
+      expect(res.status(), await res.text()).toBe(200);
+      return payload<{
+        derivedTags: { key: string }[];
+        metrics: { topupCount: number; topupTotal: number } | null;
+      }>(res);
+    };
+
+    let body = await overview();
+    expect(body.derivedTags.map((t) => t.key)).toContain('topup:0');
+    expect(body.metrics?.topupCount).toBe(0);
+
+    // Given away: not a top-up.
+    await manualCredit(request, {
+      amount: 500,
+      description: 'Goodwill credit',
+      reason: 'goodwill',
+    });
+    body = await overview();
+    expect(body.derivedTags.map((t) => t.key)).toContain('topup:0');
+    expect(body.metrics?.topupCount).toBe(0);
+
+    // A payment received and credited by hand: a top-up.
+    await manualCredit(request, {
+      amount: 1000,
+      description: 'Payment received — credited to your wallet',
+      reason: 'payment',
+    });
+    body = await overview();
+    expect(body.derivedTags.map((t) => t.key)).toContain('topup:1');
+    expect(body.derivedTags.map((t) => t.key)).not.toContain('topup:0');
+    expect(body.metrics?.topupCount).toBe(1);
+    expect(body.metrics?.topupTotal).toBe(1000);
+
+    // And an app checkout on top: two, ₹2,000.
+    const seeded = await seedPayment({ userId: customer.id });
+    await postVerify(request, customer.accessToken, verifyBody(seeded));
+    body = await overview();
+    expect(body.metrics?.topupCount).toBe(2);
+    expect(body.metrics?.topupTotal).toBe(2000);
+    expect(body.derivedTags.map((t) => t.key)).toContain('topup:2');
+  });
+
   test('an unknown reason is refused and nothing is credited', async ({
     request,
   }) => {
