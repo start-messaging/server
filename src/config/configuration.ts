@@ -56,6 +56,10 @@ export default () => ({
       // so no env change is needed to fix the voice-call fallback; override
       // with TWOFACTOR_SENDER_ID for a different 2Factor account.
       senderId: process.env.TWOFACTOR_SENDER_ID || 'STMSG',
+      // The DLT Principal Entity ID (PE ID): the registered business, one value
+      // for the account. Required by 2Factor's R1 endpoint, which is what
+      // multi-variable templates are sent through. Not a secret.
+      peId: process.env.TWOFACTOR_PE_ID,
     },
     // Settles messages the provider never sent a webhook for. Every knob is
     // an env override so the sweep can be slowed, widened or switched off

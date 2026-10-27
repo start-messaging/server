@@ -175,6 +175,8 @@ export const envValidationSchema = Joi.object({
   TWOFACTOR_API_KEY: Joi.string().allow('').optional(),
   TWOFACTOR_TEMPLATE_NAME: Joi.string().allow('').default('OTP'),
   TWOFACTOR_SENDER_ID: Joi.string().allow('').default('STMSG'),
+  // DLT Principal Entity ID, for the R1 endpoint (multi-variable templates).
+  TWOFACTOR_PE_ID: Joi.string().allow('').optional(),
 
   /**
    * Webhook-miss settlement sweep. Defaults ON, and the same `!== 'false'`

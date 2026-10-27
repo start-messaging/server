@@ -8,6 +8,10 @@ import {
   DlrResult,
 } from '../sms-provider.interface.js';
 import {
+  extractTemplateVariables,
+  countTemplateSlots,
+} from './two-factor-template.js';
+import {
   GENERIC_FAILURE_REASON,
   TWO_FACTOR_ERROR_MAP,
   customerFacingReason,
@@ -41,7 +45,10 @@ export class TwoFactorProvider implements SmsProvider {
   private readonly apiKey: string;
   private readonly templateName: string;
   private readonly senderId: string;
-  private readonly baseUrl = 'https://2factor.in/API/V1';
+  /** The DLT Principal Entity ID — the registered business, the same for every template. */
+  private readonly peId: string;
+  private readonly baseUrl: string;
+  private readonly r1Url: string;
 
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('sms.twoFactor.apiKey') ?? '';
@@ -49,6 +56,17 @@ export class TwoFactorProvider implements SmsProvider {
       this.config.get<string>('sms.twoFactor.templateName') ?? 'OTP';
     this.senderId =
       this.config.get<string>('sms.twoFactor.senderId') ?? 'STMSG';
+    this.peId = this.config.get<string>('sms.twoFactor.peId') ?? '';
+    // The two endpoints are overridable only through config keys that
+    // configuration.ts never reads from the environment, so a deployed process
+    // cannot be pointed at another host (which would be handed the API key). A
+    // spec that constructs this class directly sets them to a local stub.
+    this.baseUrl =
+      this.config.get<string>('sms.twoFactor.v1Url') ??
+      'https://2factor.in/API/V1';
+    this.r1Url =
+      this.config.get<string>('sms.twoFactor.r1Url') ??
+      'https://2factor.in/API/R1/';
   }
 
   get name(): string {
@@ -60,16 +78,28 @@ export class TwoFactorProvider implements SmsProvider {
   }
 
   isHealthy(): Promise<boolean> {
+    // Never a real provider in a test run, whatever keys are lying around.
+    //
+    // The e2e suite boots the real server, which reads `.env` for any setting
+    // the test environment does not pin — and TWOFACTOR_API_KEY is not pinned,
+    // because the suite is meant to run with none. So the day a real key was
+    // added to a developer's `.env` (to try a live send), the next full run sent
+    // 49 real OTPs to the suite's made-up numbers: six delivered to real
+    // handsets, sixteen voice-call fallbacks, and credits spent. A guard that
+    // depends on a file being empty is not a guard. NODE_ENV=test is set by the
+    // suite and by nothing else, so the vendor is refused here: the factory then
+    // falls through to the console provider, which is what the suite expects.
+    if (process.env.NODE_ENV === 'test') return Promise.resolve(false);
     return Promise.resolve(!!this.apiKey);
   }
 
   async sendSms(params: SendSmsParams): Promise<SendSmsResult> {
     // A template with more than one variable cannot be filled by the OTP
     // endpoint (it only substitutes the OTP), so 2Factor would leave the other
-    // variables empty and fall back to a voice call. The transactional
-    // endpoint takes the fully rendered message instead.
+    // variables empty and fall back to a voice call. Those go through the R1
+    // transactional endpoint, with the template name and its variables.
     if (params.multiVariable) {
-      return this.sendTransactional(params);
+      return this.sendR1(params);
     }
 
     const otp = this.extractOtp(params.content);
@@ -129,47 +159,84 @@ export class TwoFactorProvider implements SmsProvider {
   }
 
   /**
-   * Sends a DLT-approved multi-variable template through 2Factor's
-   * transactional endpoint. The fully rendered message is passed as `Msg`;
-   * the operator's DLT scrubbing matches it against the approved template for
-   * the sender header, so the variable boundaries in our stored body do not
-   * have to line up with 2Factor's {#var#} slots — only the final text has to
-   * match the approved content.
+   * Sends a DLT-approved multi-variable template through 2Factor's R1
+   * transactional endpoint.
    *
-   * Endpoint: POST /API/V1/{api_key}/ADDON_SERVICES/SEND/TSMS
-   * Form fields: From (DLT header), To, Msg.
+   * This replaced the older TSMS endpoint (`ADDON_SERVICES/SEND/TSMS`, which
+   * took the fully rendered text as `Msg`). 2Factor asked for the move after a
+   * node behind that endpoint intermittently refused sends with "Missing
+   * template name value": the old endpoint matches the text against a template
+   * on their side, and R1 is addressed by template name instead.
+   *
+   * Endpoint: GET /API/R1/?module=TRANS_SMS&apikey=…&to=…&from=…
+   *           &templatename=…&var1=…&var2=…&peid=…&ctid=…
+   *
+   * What each template needs, kept on the template's own metadata:
+   *   - `2factor`            the template name registered with 2Factor;
+   *   - `2factor_ctid`       its DLT Content Template ID;
+   *   - `2factor_dlt_text`   the DLT-approved text with its `#VAR1#` slots.
+   * plus the account-wide PE ID (TWOFACTOR_PE_ID). Anything missing is refused
+   * here, before a request is made, with a reason an admin can act on — there is
+   * no fallback to the old endpoint, so a gap shows up as a failed send that
+   * says what is missing, not as a quiet return to the thing being retired.
    */
-  private async sendTransactional(
-    params: SendSmsParams,
-  ): Promise<SendSmsResult> {
-    const url = `${this.baseUrl}/${this.apiKey}/ADDON_SERVICES/SEND/TSMS`;
-    const form = new URLSearchParams({
-      From: this.senderId,
-      To: params.to,
-      Msg: params.content,
+  private async sendR1(params: SendSmsParams): Promise<SendSmsResult> {
+    const ids = params.templateIdentifiers ?? {};
+    const templateName = ids['2factor'];
+    const ctid = ids['2factor_ctid'];
+    const dltText = ids['2factor_dlt_text'];
+
+    const missing = [
+      !this.peId && 'TWOFACTOR_PE_ID',
+      !templateName && 'template name (metadata.2factor)',
+      !ctid && 'DLT template id (metadata.2factor_ctid)',
+      !dltText && 'DLT template text (metadata.2factor_dlt_text)',
+    ].filter(Boolean) as string[];
+    if (missing.length > 0) {
+      return this.refuse(
+        `R1 send not configured for template "${templateName ?? '?'}": missing ${missing.join(', ')}`,
+      );
+    }
+
+    const values = extractTemplateVariables(dltText, params.content);
+    if (!values) {
+      return this.refuse(
+        `The message for template "${templateName}" does not match its approved DLT text, ` +
+          `so it was not sent (it would be rejected). Template slots: ${countTemplateSlots(dltText)}.`,
+      );
+    }
+
+    const query = new URLSearchParams({
+      module: 'TRANS_SMS',
+      apikey: this.apiKey,
+      to: params.to,
+      from: this.senderId,
+      templatename: templateName,
     });
+    values.forEach((v, i) => query.set(`var${i + 1}`, v));
+    query.set('peid', this.peId);
+    query.set('ctid', ctid);
 
     try {
       this.logger.debug(
-        `Sending 2Factor transactional SMS to ${params.to} (from ${this.senderId})`,
+        `Sending 2Factor R1 SMS to ${params.to} (template ${templateName}, from ${this.senderId})`,
       );
-      const response = await axios.post(url, form.toString(), {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      const response = await axios.get(`${this.r1Url}?${query.toString()}`, {
         timeout: SEND_TIMEOUT_MS,
       });
 
-      if (response.data.Status === 'Success') {
+      if (response.data?.Status === 'Success') {
         return {
-          providerMsgId: String(response.data.Details), // message/session id
+          providerMsgId: String(response.data.Details), // session id
           status: 'sent',
         };
       }
 
       // As in sendSms: a refusal arrives as HTTP 200 + Status:Error, so the
-      // catch block never sees it and nothing recorded why.
+      // catch block never sees it, and the reason has to be recorded here.
       this.logger.error(
-        `2Factor.in rejected transactional send to ${params.to} ` +
-          `(from ${this.senderId}): ${JSON.stringify(response.data)}`,
+        `2Factor.in rejected R1 send to ${params.to} ` +
+          `(template ${templateName}): ${JSON.stringify(response.data)}`,
       );
       return {
         providerMsgId: '',
@@ -181,8 +248,9 @@ export class TwoFactorProvider implements SmsProvider {
         errorType: 'service',
       };
     } catch (error: any) {
+      // The message only — never the request, which carries the API key.
       const errorMessage = error?.response?.data?.Details || error?.message;
-      this.logger.error(`2Factor.in transactional API Error: ${errorMessage}`);
+      this.logger.error(`2Factor.in R1 API Error: ${errorMessage}`);
       return {
         providerMsgId: '',
         status: 'failed',
@@ -191,6 +259,22 @@ export class TwoFactorProvider implements SmsProvider {
         errorType: 'service',
       };
     }
+  }
+
+  /**
+   * A send refused before any request: our own configuration or template is
+   * wrong, which a retry or another provider cannot fix, so it is a
+   * `validation` failure (the factory does not try a fallback for those).
+   */
+  private refuse(reason: string): SendSmsResult {
+    this.logger.error(reason);
+    return {
+      providerMsgId: '',
+      status: 'failed',
+      failureReason: GENERIC_FAILURE_REASON,
+      providerFailureReason: reason,
+      errorType: 'validation',
+    };
   }
 
   /**
