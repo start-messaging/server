@@ -1,5 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { istDayStart, parseISTDate } from '../common/utils/date.util.js';
+import {
+  istDateKey,
+  istDayStart,
+  parseISTDate,
+} from '../common/utils/date.util.js';
+import { describeDailyVolume } from './daily-volume-stats.js';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
@@ -819,6 +824,86 @@ export class MessagesService {
       delivered: parseInt(r.delivered, 10),
       failed: parseInt(r.failed, 10),
     }));
+  }
+
+  /**
+   * How many SMS are handled per IST day, for the admin dashboard, with the
+   * mean, median and mode of the daily counts.
+   *
+   * The window is the last `days` days including today. Today is unfinished, so
+   * it is returned (flagged `partial`) and shown, but the statistics are taken
+   * over the complete days only — a morning's 235 messages averaged in with
+   * full days of ~1,100 would drag the "usual day" down every time anyone looked
+   * early. The same-length block of complete days before the window is
+   * summarised too, so the figure can say whether volume is rising.
+   *
+   * One range scan on `IDX_messages_createdAt` over at most twice the window,
+   * bucketed by IST date in the database; days with nothing are filled with
+   * zeros here so a chart never has to guess.
+   */
+  async getDailyVolume(days: number) {
+    // Oldest day needed: the start of the previous block of complete days.
+    const queryStart = istDayStart(Math.max(days - 1, 2 * days - 2));
+
+    const rows: {
+      date: string;
+      total: string;
+      delivered: string;
+      failed: string;
+    }[] = await this.messageRepository.query(
+      `SELECT TO_CHAR(m."createdAt" AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS "date",
+              COUNT(*) AS "total",
+              COUNT(*) FILTER (WHERE m."status" = '${MessageStatus.DELIVERED}') AS "delivered",
+              COUNT(*) FILTER (WHERE m."status" = '${MessageStatus.FAILED}') AS "failed"
+         FROM "messages" m
+        WHERE m."createdAt" >= $1
+        GROUP BY 1`,
+      [queryStart],
+    );
+
+    const byDate = new Map(rows.map((r) => [r.date, r]));
+    const at = (daysAgo: number) => {
+      const r = byDate.get(istDateKey(daysAgo));
+      const total = parseInt(r?.total ?? '0', 10);
+      const delivered = parseInt(r?.delivered ?? '0', 10);
+      const failed = parseInt(r?.failed ?? '0', 10);
+      return {
+        date: istDateKey(daysAgo),
+        total,
+        delivered,
+        failed,
+        // Still in flight, queued or expired: everything that is not a final
+        // delivered or failed.
+        other: total - delivered - failed,
+      };
+    };
+
+    // Oldest first, as a chart reads it. The last entry is today.
+    const series = Array.from({ length: days }, (_, i) => at(days - 1 - i)).map(
+      (d, i, all) => ({ ...d, partial: i === all.length - 1 }),
+    );
+    const complete = series.slice(0, -1);
+    const stats = describeDailyVolume(complete);
+
+    // The block of complete days immediately before `complete`.
+    const previousBlock = Array.from({ length: Math.max(days - 1, 0) }, (_, j) =>
+      at(2 * days - 2 - j),
+    );
+    const previous = describeDailyVolume(previousBlock);
+
+    return {
+      days: series,
+      stats,
+      today: series[series.length - 1],
+      previous: previous
+        ? { completeDays: previous.completeDays, mean: previous.mean }
+        : null,
+      // Null, not zero or infinite, when there is nothing earlier to compare.
+      changePercent:
+        stats && previous && previous.mean > 0
+          ? Math.round(((stats.mean - previous.mean) / previous.mean) * 1000) / 10
+          : null,
+    };
   }
 
   async getDashboardStats(

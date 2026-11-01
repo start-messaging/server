@@ -284,6 +284,24 @@ export class AdminController {
     return this.walletService.getCollectionsByDay(n);
   }
 
+  @Get('dashboard/sms-volume')
+  @ApiOperation({
+    summary: 'Daily SMS volume with mean, median and mode (admin)',
+    description:
+      'SMS handled per IST day for the last N days, oldest first, every day ' +
+      'present. The statistics (mean, median, mode band, busiest and quietest ' +
+      'day) cover complete days only — today is returned but flagged partial ' +
+      'and left out — and are compared with the block of days before.',
+  })
+  getSmsVolume(@Query('days') days?: string) {
+    // Whole days, 1–180: the query scans up to twice the window.
+    const n = days === undefined ? 30 : Number(days);
+    if (!Number.isInteger(n) || n < 1 || n > 180) {
+      throw new BadRequestException('days must be a whole number from 1 to 180');
+    }
+    return this.messagesService.getDailyVolume(n);
+  }
+
   @Get('dashboard/daily-usage')
   @ApiOperation({
     summary: 'Daily usage per user for a specific date (paginated, searchable)',
